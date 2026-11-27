@@ -1,6 +1,6 @@
 mod model;
 pub mod preview;
-mod snapshot;
+pub(crate) mod snapshot;
 #[cfg(test)]
 mod tests;
 

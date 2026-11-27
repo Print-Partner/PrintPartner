@@ -35,6 +35,15 @@ These five reads use the request's API key. An ID owned by another tenant is tre
 
 An empty Build has no Accepted revision (`basis.kind: "empty"`). A stale Build can still report its Accepted revision; `build_stale` means its current configuration no longer matches that revision. A missing Plan answers `plan_not_found`, a missing or unrelated revision answers `not_found`, and an uninitialized or compatibility-dirty head or changing option-group observation answers `stale_plan`. These refusals set `isError` and carry an `error` message and a machine-readable `code`.
 
+These tools stage proposals only. `confirm_apply` uses the Accepted head observed at proposal time and refuses a changed head with `base_changed`.
+
+| Tool | On confirmation |
+| --- | --- |
+| `create_plan_snapshot` `{ plan_id, name? }` | Append a named snapshot of the Accepted revision and Build header. Returns `snapshot_id` for use with restore; this is not a revision ID. |
+| `propose_restore_snapshot` `{ plan_id, snapshot_id }` | Restore to a new Draft without changing the Accepted Plan or Checkoff. An open Draft or a snapshot without a recorded Accepted revision blocks restore. Inspect the Draft before accepting it. |
+| `duplicate_plan` `{ plan_id, name }` | Create a detached experiment, turning Accepted choices into a new Draft. Does not copy Checkoff, Plates or send state. |
+| `archive_plan` `{ plan_id }` | Archive only when the same Accepted Plan has no remaining Required units. Retain its history and completed progress. |
+
 ### Other reads and proposals
 
 - `get_build_workflow` reads the Build workflow with the request's API key, the same projection as `GET /plans/{id}/workflow` and the task feed ([Build workflow](build-workflow.md)). Errors answer `{"error": "plan_id required"}`, `{"error": "Build not found"}` or `{"error": "Build workflow is unavailable"}`. The last covers a storage or authentication failure, a Build that fails its integrity checks, and a body that can't be serialized. Every error sets `isError`.

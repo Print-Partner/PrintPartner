@@ -21,7 +21,7 @@ use super::save::{
     Refusal, accepted_base, copy_credential, keyed_expectations, observed_draft, tenant_actor,
 };
 use super::*;
-pub use pp_contracts::snapshot_restore::RestoreSnapshotRequest;
+pub use pp_contracts::snapshot_restore::{RestoreMode, RestoreSnapshotRequest};
 use required_units::storage::part_rows;
 
 const KEY_PREFIX: &str = "snapshot-restore-v1:";
@@ -317,7 +317,7 @@ pub(crate) fn snapshot_revision(payload: &str) -> Option<i64> {
 /// The Accepted revision of Build `profile` the snapshot payload records, if
 /// it records one. Node's own snapshots record Source layers and kit choices
 /// only, which a draft cannot hold.
-fn restorable_revision(
+pub(crate) fn restorable_revision(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,

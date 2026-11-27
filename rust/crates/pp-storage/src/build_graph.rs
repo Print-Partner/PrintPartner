@@ -3,6 +3,7 @@ mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 mod experiments;
+pub mod history;
 pub(crate) const SCHEMA_STEP: u64 = 48;
 pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod create_with_brief;

@@ -1,4 +1,6 @@
-use super::{ErrorData, PresentedCredential, ProductMcp, ToolResult, plan_accept};
+use super::{
+    ErrorData, PresentedCredential, ProductMcp, ToolResult, plan_accept, plan_history_changes,
+};
 use pp_services::mcp_domain::{DomainPort, ProposedAction};
 use pp_storage::{
     WriterFailure,
@@ -202,6 +204,8 @@ impl ProductMcp {
         };
         let decision = if action.action_type == plan_accept::PROPOSE {
             self.confirm_accept(action, presented).await
+        } else if plan_history_changes::TOOLS.contains(&action.action_type.as_str()) {
+            self.confirm_history_change(action, presented).await
         } else {
             match self
                 .in_tools(Some(presented), move |tools| {

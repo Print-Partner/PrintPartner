@@ -61,7 +61,7 @@ pub(crate) fn name_taken(
     )?)
 }
 
-fn summary(
+pub(super) fn summary(
     tx: &Transaction<'_>,
     tenant: &str,
     build: i64,
@@ -174,6 +174,25 @@ fn archive_in(
     profile: &ProfileSummary,
     repos: &std::path::Path,
 ) -> Result<std::result::Result<(), ArchiveRefusal>> {
+    if let Err(reason) = archive_allowed(tx, tenant, id, profile, repos)? {
+        return Ok(Err(reason));
+    }
+    if profile.archived_at.is_none() {
+        tx.execute(
+            "UPDATE build_profiles SET archived_at=?1 WHERE tenant_id=?2 AND id=?3",
+            params![auth::catalog_timestamp(), tenant, id],
+        )?;
+    }
+    Ok(Ok(()))
+}
+
+pub(super) fn archive_allowed(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    id: i64,
+    profile: &ProfileSummary,
+    repos: &std::path::Path,
+) -> Result<std::result::Result<(), ArchiveRefusal>> {
     if profile.archived_at.is_some() {
         return Ok(Ok(()));
     }
@@ -217,9 +236,5 @@ fn archive_in(
             return Ok(Err(ArchiveRefusal::Integrity));
         }
     }
-    tx.execute(
-        "UPDATE build_profiles SET archived_at=?1 WHERE tenant_id=?2 AND id=?3",
-        params![auth::catalog_timestamp(), tenant, id],
-    )?;
     Ok(Ok(()))
 }

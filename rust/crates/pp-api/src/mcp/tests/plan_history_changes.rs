@@ -1,13 +1,12 @@
 use super::{
+    plan_history::fixture,
     reads::{confirm, session, tool},
     *,
 };
 use rusqlite::Connection;
 
 async fn setup() -> (McpServer, Vec<(String, String)>, Connection) {
-    let server = McpServer::seeded("").await;
-    std::fs::create_dir_all(server._directory.join("repos/1/revisions/fixture")).unwrap();
-    let headers = session(&server, &format!("Bearer {}", server.create_key().await.1)).await;
+    let (server, headers) = fixture("").await;
     let db = Connection::open(server._directory.join("print-partner.db")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
     (server, headers, db)
@@ -17,17 +16,33 @@ fn count(db: &Connection, query: &str) -> i64 {
     db.query_row(query, [], |row| row.get(0)).unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn duplicate_refuses_to_overfill_the_builds_list() {
-    let (server, headers, db) = setup().await;
+async fn propose_duplicate(server: &McpServer, headers: &[(String, String)]) -> Value {
     let (proposal, failed) = tool(
-        &server,
-        &headers,
+        server,
+        headers,
         "duplicate_plan",
         json!({"plan_id":1,"name":"Experiment"}),
     )
     .await;
     assert!(!failed, "{proposal}");
+    proposal
+}
+
+fn draft_provenance(db: &Connection, draft: i64) -> (i64, Option<i64>) {
+    db.query_row(
+        "SELECT i.source_revision_id,p.base_revision_part_id FROM plan_draft_inputs i
+           JOIN plan_draft_parts p ON p.draft_id=i.draft_id
+          WHERE i.draft_id=?1 AND p.part_key='bracket.stl'",
+        [draft],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_refuses_to_overfill_the_builds_list() {
+    let (server, headers, db) = setup().await;
+    let proposal = propose_duplicate(&server, &headers).await;
     db.execute_batch(
         "WITH RECURSIVE builds(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM builds WHERE n<63)
          INSERT INTO build_profiles(tenant_id,name) SELECT 'default','Build '||n FROM builds;",
@@ -49,14 +64,7 @@ async fn duplicate_refuses_to_overfill_the_builds_list() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_refuses_when_layers_no_longer_match_accepted_inputs() {
     let (server, headers, db) = setup().await;
-    let (proposal, failed) = tool(
-        &server,
-        &headers,
-        "duplicate_plan",
-        json!({"plan_id": 1, "name": "Experiment"}),
-    )
-    .await;
-    assert!(!failed, "{proposal}");
+    let proposal = propose_duplicate(&server, &headers).await;
     assert_eq!(
         db.execute("DELETE FROM profile_layers WHERE profile_id=1", [])
             .unwrap(),
@@ -116,46 +124,40 @@ async fn snapshot_restore_keeps_accepted_identity_and_restores_provenance_as_a_d
     assert!(!failed, "{restored}");
     assert_eq!(restored["result"]["draft"]["base"]["revision_id"], 1);
     let draft = restored["result"]["draft"]["draft_id"].as_i64().unwrap();
-    let state: (i64, String, String, i64, i64) = db.query_row(
-        "SELECT b.accepted_plan_revision_id,b.name,h.name,i.source_revision_id,p.base_revision_part_id
+    let state: (i64, String, String) = db
+        .query_row(
+            "SELECT b.accepted_plan_revision_id,b.name,h.name
            FROM build_profiles b
            JOIN plan_drafts d ON d.profile_id=b.id
            JOIN plan_draft_headers h ON h.draft_id=d.id
-           JOIN plan_draft_inputs i ON i.draft_id=d.id
-           JOIN plan_draft_parts p ON p.draft_id=d.id
-          WHERE d.id=?1 AND p.part_key='bracket.stl'",
-        [draft], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
-    ).unwrap();
-    assert_eq!(
-        state,
-        (1, "Renamed later".into(), "Fixture Build".into(), 1, 1)
-    );
+          WHERE d.id=?1",
+            [draft],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(state, (1, "Renamed later".into(), "Fixture Build".into()));
+    assert_eq!(draft_provenance(&db, draft), (1, Some(1)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_is_detached_and_archive_retains_history() {
     let (server, headers, db) = setup().await;
     let call = |name, args| tool(&server, &headers, name, args);
-    let (duplicate, failed) =
-        call("duplicate_plan", json!({"plan_id":1,"name":"Experiment"})).await;
-    assert!(!failed, "{duplicate}");
+    let duplicate = propose_duplicate(&server, &headers).await;
     assert_eq!(count(&db, "SELECT count(*) FROM build_experiments"), 0);
     let (copy, failed) = confirm(&server, &headers, &duplicate).await;
     assert!(!failed, "{copy}");
     let experiment = copy["result"]["build_id"].as_i64().unwrap();
-    let (parent, accepted, detached, source, progress): (i64, Option<i64>, Option<i64>, i64, i64) = db.query_row(
-        "SELECT e.parent_build_id,b.accepted_plan_revision_id,p.base_revision_part_id,i.source_revision_id,
+    let draft = copy["result"]["draft_id"].as_i64().unwrap();
+    assert_eq!(draft_provenance(&db, draft), (1, None));
+    let state: (i64, Option<i64>, i64) = db.query_row(
+        "SELECT e.parent_build_id,b.accepted_plan_revision_id,
                 (SELECT COUNT(*) FROM print_progress g JOIN parts x ON x.id=g.part_id WHERE x.profile_id=b.id)
            FROM build_experiments e JOIN build_profiles b ON e.build_id=b.id
-           JOIN plan_drafts d ON d.profile_id=b.id JOIN plan_draft_parts p ON p.draft_id=d.id
-           JOIN plan_draft_inputs i ON i.draft_id=d.id
-          WHERE b.id=?1 AND p.part_key='bracket.stl'",
-        [experiment], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+          WHERE b.id=?1",
+        [experiment], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     ).unwrap();
-    assert_eq!(
-        (parent, accepted, detached, source, progress),
-        (1, None, None, 1, 0)
-    );
+    assert_eq!(state, (1, None, 0));
 
     let (remaining, failed) = call("archive_plan", json!({"plan_id":1})).await;
     assert!(failed, "{remaining}");

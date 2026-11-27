@@ -13,6 +13,11 @@ Status terms and the Rust-only rule are defined in the [contract overview](../ui
 | Build history | `GET /plans/:id/history` | Exists in Rust behind `desktop_rebuild` (GRE-1092); the generated client names it `readBuildHistory`. The replacement History tab lists it newest first with Show older entries (GRE-1101). It lists manual and printer checkoff bursts with their live undo state and undoes one with `POST /plans/:id/history/:entry_id/undo` (`undoBuildHistoryEntry`); sends show as not undoable with the reason (GRE-1259, UI8-03 done). Keep UI ticket GRE-1023 unchanged. See [Build history](../../build-history.md) |
 | Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | Exists in Rust behind `desktop_rebuild` (GRE-1094), for snapshots Accept saved; see [Build history](../../build-history.md#restore-a-snapshot-as-a-draft). The History tab offers it, as a button and as `R`, on each snapshot whose history entry is `restorable`, and opens the Plan tab's Accept gate on the restored draft (GRE-1260) |
 
+Build History still shows assistant decisions that belong to a Build. It does
+not show old assistant conversations or feedback. Those records stay in
+private installation backups and are restored with the installation. There is
+no in-app conversation workspace or bulk domain-pack import.
+
 ## Delivery slices
 
 Numbers preserve the [product build order](../ui-ux-target.md#build-order); Linear owns execution state.

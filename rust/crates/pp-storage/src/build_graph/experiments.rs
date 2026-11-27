@@ -44,6 +44,9 @@ pub(crate) fn duplicate(
             name: name.as_str().to_owned(),
         });
     }
+    if at_build_limit(tx, tenant)? {
+        return Ok(BuildOutcome::BuildLimitReached);
+    }
     // No accepted pointers, order number, Checkoff, Plate or send state is copied.
     tx.execute(
         "INSERT INTO build_profiles(tenant_id,name,special_request,config_modified_at,last_used_at) SELECT tenant_id,?1,special_request,?2,?2 FROM build_profiles WHERE tenant_id=?3 AND id=?4",

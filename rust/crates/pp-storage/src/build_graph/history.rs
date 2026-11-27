@@ -33,6 +33,8 @@ pub enum Refusal {
     OpenDraft,
     #[error("A Build with that name already exists")]
     DuplicateName,
+    #[error("Build limit reached")]
+    BuildLimitReached,
     #[error("The Plan cannot be archived")]
     Archive(ArchiveRefusal),
     #[error(transparent)]
@@ -105,6 +107,7 @@ impl BuildGraphClient {
                         {
                             BuildOutcome::Duplicated(copy) => Ok(Applied::Duplicate(copy)),
                             BuildOutcome::RenameTaken { .. } => Err(Refusal::DuplicateName),
+                            BuildOutcome::BuildLimitReached => Err(Refusal::BuildLimitReached),
                             BuildOutcome::MissingBuild => Err(Refusal::Missing),
                             _ => {
                                 Err(WriterFailure::from(anyhow!("Unexpected duplicate outcome"))

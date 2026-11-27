@@ -272,6 +272,7 @@ fn refusal(error: &Refusal) -> McpRefusal {
             "Close the open Draft before proposing a restore",
         ),
         Refusal::DuplicateName => (Code::NameTaken, "A Build with that name already exists"),
+        Refusal::BuildLimitReached => (Code::BuildLimitReached, "Build limit reached"),
         Refusal::Archive(ArchiveRefusal::Remaining) => (
             Code::PrintRemaining,
             "Archive only when print remaining is 0",

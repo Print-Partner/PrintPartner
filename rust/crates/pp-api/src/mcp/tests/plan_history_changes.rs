@@ -18,6 +18,35 @@ fn count(db: &Connection, query: &str) -> i64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_refuses_to_overfill_the_builds_list() {
+    let (server, headers, db) = setup().await;
+    let (proposal, failed) = tool(
+        &server,
+        &headers,
+        "duplicate_plan",
+        json!({"plan_id":1,"name":"Experiment"}),
+    )
+    .await;
+    assert!(!failed, "{proposal}");
+    db.execute_batch(
+        "WITH RECURSIVE builds(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM builds WHERE n<63)
+         INSERT INTO build_profiles(tenant_id,name) SELECT 'default','Build '||n FROM builds;",
+    )
+    .unwrap();
+    let (full, failed) = confirm(&server, &headers, &proposal).await;
+    assert!(failed, "{full}");
+    assert_eq!(full["code"], "build_limit_reached");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM build_profiles WHERE tenant_id='default'"
+        ),
+        64
+    );
+    assert_eq!(count(&db, "SELECT count(*) FROM build_experiments"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_restore_keeps_accepted_identity_and_restores_provenance_as_a_draft() {
     let (server, headers, db) = setup().await;
     let call = |name, args| tool(&server, &headers, name, args);

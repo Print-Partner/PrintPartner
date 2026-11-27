@@ -51,6 +51,15 @@ pub enum BudgetResource {
 /// refuses to make the next one and the Builds list stays readable.
 pub const MAX_BUILDS: usize = 64;
 
+fn at_build_limit(tx: &Transaction<'_>, tenant: &str) -> Result<bool> {
+    let count: i64 = tx.query_row(
+        "SELECT count(*) FROM build_profiles WHERE tenant_id=?1",
+        [tenant],
+        |row| row.get(0),
+    )?;
+    Ok(count >= MAX_BUILDS as i64)
+}
+
 #[derive(Debug)]
 pub enum Failure {
     Cancelled,
@@ -429,12 +438,7 @@ pub(crate) fn mutation(
                     name: name.as_str().to_owned(),
                 });
             }
-            let count: i64 = tx.query_row(
-                "SELECT count(*) FROM build_profiles WHERE tenant_id=?1",
-                [tenant],
-                |row| row.get(0),
-            )?;
-            if count >= MAX_BUILDS as i64 {
+            if at_build_limit(tx, tenant)? {
                 return Ok(BuildOutcome::BuildLimitReached);
             }
             let source = if let Some(source) = base_source {

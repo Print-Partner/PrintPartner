@@ -95,6 +95,7 @@ pub(super) enum Code {
     SnapshotRestoreRefused,
     PrintedUnitsAffected,
     PrintRemaining,
+    BuildLimitReached,
 }
 
 impl Code {
@@ -166,6 +167,7 @@ impl Code {
             Self::SnapshotRestoreRefused => "snapshot_restore_refused",
             Self::PrintedUnitsAffected => "printed_units_affected",
             Self::PrintRemaining => "print_remaining",
+            Self::BuildLimitReached => "build_limit_reached",
         }
     }
 }

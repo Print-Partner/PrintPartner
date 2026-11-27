@@ -4,6 +4,7 @@
 //! Plates as 3MF; [`direct`] exports selected Required units without placements.
 //! Downloads don't store files; [`slicer`] delivers a managed Plate locally.
 
+pub mod bambu_connect;
 mod direct;
 mod managed;
 mod pack;

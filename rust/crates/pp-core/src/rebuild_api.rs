@@ -10,7 +10,7 @@ use pp_api::{
     checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     events::{StreamLimits, events_router},
-    exports::exports_router_with_slicer,
+    exports::{bambu_connect::bambu_connect_router, exports_router_with_slicer},
     file_assignments::file_assignments_router,
     history::history_router,
     integrations::integrations_router,
@@ -50,6 +50,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod bambu_connect;
 mod slicer_inbox;
 mod web_discovery;
 
@@ -265,7 +266,7 @@ pub(crate) struct RuntimeInputs {
     pub(crate) server: ServerOptions,
     pub(crate) farm: Arc<dyn pp_api::farm::FarmObservations>,
     pub(crate) web_discovery: Option<Arc<dyn pp_api::mcp::web_discovery::Discovery>>,
-    pub(crate) local_slicers: bool,
+    pub(crate) local_desktop: bool,
 }
 
 impl RuntimeInputs {
@@ -283,7 +284,7 @@ impl RuntimeInputs {
             },
             farm: Arc::new(farm.clone()),
             web_discovery: web_discovery::WebDiscovery::from_env()?,
-            local_slicers: !update_checks && !explicit_listener,
+            local_desktop: !update_checks && !explicit_listener,
         })
     }
 
@@ -294,7 +295,7 @@ impl RuntimeInputs {
             server: ServerOptions::default(),
             farm: Arc::new(crate::printer_status::LateFarm::default()),
             web_discovery: None,
-            local_slicers: false,
+            local_desktop: false,
         }
     }
 }
@@ -467,7 +468,18 @@ fn read_router_with_updates(
         runtime.server.update_checks,
     )?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
-    let slicer = runtime.local_slicers.then(|| {
+    let handoff = if runtime.local_desktop {
+        bambu_connect_router(
+            config.clone(),
+            accepted_client.clone(),
+            Arc::new(bambu_connect::LocalFiles(
+                admin_files.data_directory().into(),
+            )),
+        )
+    } else {
+        Router::new()
+    };
+    let slicer = runtime.local_desktop.then(|| {
         Arc::new(slicer_inbox::LocalInbox::new(
             admin_files.data_directory().into(),
         )) as Arc<dyn pp_services::native_slicers::Handoff>
@@ -510,6 +522,7 @@ fn read_router_with_updates(
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
+            .merge(handoff)
             .merge(board)
             .merge(history_router(config.clone(), history_client))
             .merge(planning)

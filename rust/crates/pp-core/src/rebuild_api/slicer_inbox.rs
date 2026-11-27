@@ -150,8 +150,16 @@ fn inbox(root: &Dir, id: &str) -> io::Result<Dir> {
 }
 
 fn publish(dir: &Dir, filename: &str, bytes: &[u8]) -> Result<bool, HandoffFailure> {
+    dir.try_lock().map_err(|_| HandoffFailure::Unavailable)?;
+    publish_locked(dir, filename, bytes)
+}
+
+pub(super) fn publish_locked(
+    dir: &Dir,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<bool, HandoffFailure> {
     use HandoffFailure::{ArtifactConflict, Unavailable};
-    dir.try_lock().map_err(|_| Unavailable)?;
     match dir.status_nofollow(filename) {
         Ok(status) if status.is_file() && status.links() == 1 => {
             let file = dir

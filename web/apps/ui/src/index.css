@@ -181,7 +181,8 @@ a.pp-header-button {
   padding: 16px;
 }
 
-.pp-proposal h2 {
+.pp-proposal h2,
+.pp-proposal h3 {
   margin-top: 0;
 }
 

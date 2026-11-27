@@ -61,6 +61,16 @@ impl From<Entry> for BoardNote {
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub(crate) struct BoardFeed {
     notes: Vec<BoardNote>,
+    imported_posts: Vec<ImportedBoardPost>,
+}
+
+#[derive(Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct ImportedBoardPost {
+    id: String,
+    caption: String,
+    title: String,
+    created_at: String,
 }
 
 #[derive(Serialize)]
@@ -98,9 +108,22 @@ pub(crate) fn fixtures() -> Result<Vec<serde_json::Value>, serde_json::Error> {
             "populated",
             BoardFeed {
                 notes: vec![note()],
+                imported_posts: vec![ImportedBoardPost {
+                    id: "legacy-a".into(),
+                    caption: "Check the fasteners.".into(),
+                    title: "Shelf bracket".into(),
+                    created_at: "2026-10-02T12:00:00.000Z".into(),
+                }],
             },
         )?,
-        served("BoardFeed", "empty", BoardFeed { notes: vec![] })?,
+        served(
+            "BoardFeed",
+            "empty",
+            BoardFeed {
+                notes: vec![],
+                imported_posts: vec![],
+            },
+        )?,
         served("CreateBoardNoteRequest", "add-note", request)?,
         served(
             "BoardBuilds",
@@ -162,8 +185,18 @@ async fn list(
         })
         .await
     {
-        Ok(Ok(notes)) => ok_json(&BoardFeed {
-            notes: notes.into_iter().map(BoardNote::from).collect(),
+        Ok(Ok(feed)) => ok_json(&BoardFeed {
+            notes: feed.notes.into_iter().map(BoardNote::from).collect(),
+            imported_posts: feed
+                .imported_posts
+                .into_iter()
+                .map(|(id, post)| ImportedBoardPost {
+                    id,
+                    caption: post.caption,
+                    title: post.title,
+                    created_at: post.created_at,
+                })
+                .collect(),
         }),
         Ok(Err(error)) => problem::writer_failure(&error),
         Err(_) => internal(),

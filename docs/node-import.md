@@ -300,6 +300,7 @@ The checked rows are `stl_naming_defaults`, `build_planning.v1.{build}`, `build_
 The import will copy these byte for byte; step 2 writes the copy and its checks:
 
 - Accepted Plan, Required-unit and Plate rows. Step 2 compares their digests with the source's.
+- Original `board_posts` rows, including hidden posts, covers and recipe snapshots.
 - Settings whose value is not a JSON object or array.
 - Two credentials, by name: the settings `github_pat` and `discord_notify_webhook_url`. They stay plain `app_settings` rows on every platform, with no converter and no keychain (architect's ruling, 2026-11-13, on GRE-412). A later converter that rewrites `app_settings` leaves them alone. The report prints their keys, never their values.
 - Slicer profile text, which Rust reads and keeps opaque (`ps/profiles.rs`): `printer_profiles.raw_json`, `printer_profiles.resolved_flat_config`, `process_profiles.resolved_flat_config`, `filament_profiles.raw_json`, `filament_profiles.resolved_flat_config`, `filament_profiles.retraction`.
@@ -310,7 +311,7 @@ The import will not carry `sessions`, `password_reset_tokens`, lease files or `b
 
 No Rust code reads these. The import keeps them byte for byte, also for features the product has cut:
 
-- Tables: `board_posts`, `plan_shares`, `printer_telemetry`, `slicer_instances`.
+- Tables: `board_comments`, `plan_shares`, `printer_telemetry`, `slicer_instances`.
 - Settings: `filename_grouping:{build}`, `manifest_v2_{id}`, `integration_webhooks_v1`, `printer.print_outcomes`, `assistant_feedback`, `assistant_chat_history`, `assistant_daily_usage`. Rust's export job has a `filename_grouping` field of its own and does not read the setting.
 
 Legacy assistant chat and feedback stay in the imported database for private
@@ -318,9 +319,13 @@ archival. Rust installation backup and restore preserve both setting values
 byte for byte. Rust does not expose them through HTTP, MCP or the UI. This does
 not change Build decision history or add the old bulk domain-pack endpoint.
 
-The private Rust Board displays only new local Build notes. Imported
-`board_posts` remain intact and undisplayed; GRE-1992 tracks conversion where
-an imported post's Build link can be established.
+The import copies the single imported owner's non-hidden Board posts into
+the Rust-owned `board_imported_posts` setting on the staged copy. It keys
+each post's caption, title and creation time by the legacy post ID and leaves
+the original rows intact. The private Rust Board shows this copy read-only;
+it never reads Node's tables at runtime. Node did not store the original
+Build ID on the post or in the recipe snapshot, so imported posts have no
+Build link. Hidden posts, comments, covers and recipe snapshots stay undisplayed.
 
 ## Installation value and accounts
 

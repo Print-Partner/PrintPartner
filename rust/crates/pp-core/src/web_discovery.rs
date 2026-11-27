@@ -77,7 +77,7 @@ impl WebDiscovery {
             Some(host) => format!("site:{host} {query}"),
             None => query.to_owned(),
         };
-        let mut url = Url::parse(SEARCH_URL).expect("fixed Brave search URL");
+        let mut url = Url::parse(SEARCH_URL).map_err(|_| Error::Unavailable)?;
         url.query_pairs_mut()
             .append_pair("q", &query)
             .append_pair("count", &MAX_HITS.to_string());

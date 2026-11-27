@@ -58,6 +58,42 @@ The send worker and the import worker share the owner's one worker admission. Ea
 
 ## Checks
 
+### Supplied-file launcher receipt (GRE-2004)
+
+The launcher proof starts the Rust-only runtime with a nonexistent Node
+executable, a disposable data directory, and a synthetic local Source.
+It sends loose STL files and a ZIP through both the bare and `/api/v1`
+upload paths. The desktop cookie without a session cannot admit an upload.
+Each authorized request returns a distinct `supplied-source-import` job
+that finishes and publishes the Source revision. Identical ZIP contents
+reuse the revision, not the job ID.
+
+The proof stops the launcher and leaves a fixture at the durable
+`owned_input_ready` checkpoint for the same Source. It deletes the
+original supplied file before starting the launcher again. Startup
+completes the same job and publishes the retained bytes without a second
+upload. The previous job receipts survive, the import cleans up its
+staging data, and one more restart preserves the active revision and job
+IDs without creating more work.
+
+The bare and `/api/v1` POST aliases for `import-scan`,
+`check-source-updates`, and `extract-source-docs` do not admit these
+imports or fall back to Node. This is evidence for the Rust-owned
+supplied-file route and worker, not parity for those legacy jobs or a
+production ownership switch. The
+[transition inventory](recovery-transitions.md#other-durable-work-and-app-handoffs)
+and [GRE-2005](https://linear.app/greetz/issue/GRE-2005) track other groups.
+
+Run the launcher receipt alone:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --features desktop_rebuild --test source_upload_http --no-tests=fail \
+  -E 'test(ticket_t_28_recovery_supplied_import)'
+```
+
+Run the related upload, recovery, and worker admission suites:
+
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild -E 'binary(source_upload_http) | binary(source_import_zip) | binary(source_acquisition_recovery) | binary(import_worker_policy)'
 ```

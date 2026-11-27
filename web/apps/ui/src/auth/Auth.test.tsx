@@ -84,6 +84,7 @@ describe("next", () => {
     "/setup",
     "/forgot-password",
     "/RESET-PASSWORD/?token=fixture",
+    "/%72eset-password?token=fixture",
     "/LOGIN",
     "/Setup",
     "/login/",

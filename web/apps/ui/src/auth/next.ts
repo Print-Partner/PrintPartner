@@ -33,7 +33,7 @@ export function nextPath(raw: string | null, routes: RouteObject[]): string {
   const path = `${url.pathname}${url.search}${url.hash}`;
   if (url.origin !== BASE || !isSameOriginPath(path) || isAuthPath(url.pathname)) return HOME;
   const leaf = matchRoutes(routes, url.pathname)?.at(-1)?.route;
-  if (!leaf || leaf.path === "*") return HOME;
+  if (!leaf || leaf.path === "*" || (leaf.path && isAuthPath(leaf.path))) return HOME;
   return path;
 }
 

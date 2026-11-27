@@ -284,7 +284,9 @@ The manifest records the accepted Plan and Plate revisions, printer references,
 Required-unit tokens, filament colors from the Plate's accepted Plan revision,
 and the verified Source revision and SHA-256 for each model object. Accept
 captures the locally saved Spoolman color when the Part's role and filament ID
-match the assignment. Exports never contact Spoolman or read live colors.
+match the assignment. Duplicating a Build as an experiment copies those colors
+with the draft's filament choices, so a later edit on the source Build does not
+change the experiment. Exports never contact Spoolman or read live colors.
 Older revisions without a saved Spoolman color still omit it. Geometry uses
 the saved placement in millimeters; the models do not contain sliced toolpaths.
 A missing or stale revision, an

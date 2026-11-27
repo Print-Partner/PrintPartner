@@ -1,4 +1,4 @@
-mod material;
+pub(crate) mod material;
 mod model;
 pub mod preview;
 pub(crate) mod snapshot;

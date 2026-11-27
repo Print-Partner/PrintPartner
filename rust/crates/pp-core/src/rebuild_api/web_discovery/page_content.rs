@@ -27,7 +27,7 @@ impl PageContent {
         let format = match media_type.trim().to_ascii_lowercase().as_str() {
             "text/html" => Format::Html,
             "application/xhtml+xml" => Format::Xhtml,
-            "text/plain" => Format::Plain,
+            "text/plain" | "text/markdown" => Format::Plain,
             _ => return Err(Error::ContentType),
         };
         Ok(Self {

@@ -59,7 +59,10 @@ impl WebDiscovery {
         let (url, response) = follow_page(url, |url| async move {
             self.client
                 .get(url)
-                .header(header::ACCEPT, "text/html,text/plain")
+                .header(
+                    header::ACCEPT,
+                    "text/html,application/xhtml+xml,text/markdown,text/plain",
+                )
                 .send()
                 .await
                 .map_err(network_error)

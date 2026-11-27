@@ -137,23 +137,17 @@ pub fn extract(text: &str, page_links: &[String]) -> Extract {
             continue;
         }
         let host = url.host_str().unwrap_or_default();
-        let kind = [
-            "github",
-            "printables",
-            "makerworld",
-            "thingiverse",
-            "thangs",
-        ]
-        .into_iter()
-        .find(|kind| {
-            host.strip_suffix(".com").is_some_and(|name| {
-                name == *kind
-                    || name
-                        .strip_suffix(kind)
-                        .is_some_and(|prefix| prefix.ends_with('.'))
+        let kind = ["github", "printables", "makerworld"]
+            .into_iter()
+            .find(|kind| {
+                host.strip_suffix(".com").is_some_and(|name| {
+                    name == *kind
+                        || name
+                            .strip_suffix(kind)
+                            .is_some_and(|prefix| prefix.ends_with('.'))
+                })
             })
-        })
-        .unwrap_or("other");
+            .unwrap_or("other");
         if kind == "other" && url.path() == "/" {
             continue;
         }

@@ -70,7 +70,7 @@ impl Error {
             ),
             Self::ContentType => (
                 "unsupported_content",
-                "Only HTML and plain text pages can be fetched.",
+                "Only HTML, Markdown and plain text pages can be fetched.",
             ),
             Self::Encoding => (
                 "unsupported_encoding",

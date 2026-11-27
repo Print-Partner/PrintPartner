@@ -178,6 +178,14 @@ fn bounds_and_attributes_remote_text() {
     .unwrap();
     assert_eq!(page.text.len(), MAX_TEXT);
     assert!(page.truncated);
+    let markdown = page_text(
+        page.url,
+        b"# README\nPrinter: Kit\n",
+        content_type("text/markdown; charset=UTF-8"),
+    )
+    .unwrap();
+    assert_eq!(markdown.text, "# README\nPrinter: Kit");
+    assert!(!markdown.truncated);
 }
 
 #[test]

@@ -94,7 +94,10 @@ async fn open_fixed_sponsor() -> Result<(), &'static str> {
     run_browser(command, Duration::from_secs(5)).await
 }
 
-async fn run_browser(mut command: Command, timeout: Duration) -> Result<(), &'static str> {
+pub(crate) async fn run_browser(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<(), &'static str> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())

@@ -458,6 +458,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "SendQueue",
     ),
+    route(
+        "stageBambuConnect",
+        "POST",
+        "/api/v2/plans/{id}/bambu-connect-handoff",
+        None,
+        "BambuConnectStage",
+    ),
     route("listSources", "GET", "/api/v1/sources", None, "SourceList"),
     route(
         "listSourceActivity",
@@ -972,6 +979,10 @@ pub(crate) mod codegen {
             schemars::schema_for!(MatchSuggestionList),
         )?;
         schema("SendQueue", schemars::schema_for!(SendQueue))?;
+        schema(
+            "BambuConnectStage",
+            schemars::schema_for!(crate::exports::bambu_connect::BambuConnectStage),
+        )?;
         schema(
             "SourceList",
             schemars::schema_for!(crate::catalog::wire::SourceList),
@@ -2722,6 +2733,14 @@ pub(crate) mod codegen {
         cases.extend(crate::auth::contract::fixtures()?);
         cases.extend(crate::mcp::proposal_fixtures()?);
         cases.extend(crate::builds::board::fixtures()?);
+        cases.push(served(
+            "BambuConnectStage",
+            "staged",
+            crate::exports::bambu_connect::BambuConnectStage {
+                filename: "fixture.gcode.3mf".into(),
+                connect_url: "bambu-connect://import-file?path=%2Ffixture.gcode.3mf&name=fixture&version=1.0.0".into(),
+            },
+        )?);
         for (name, value) in [
             ("on", json!({"on": true})),
             ("off", json!({"on": false})),

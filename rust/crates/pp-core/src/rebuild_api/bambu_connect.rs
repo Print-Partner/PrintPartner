@@ -5,13 +5,27 @@ use pp_services::native_slicers::HandoffFailure;
 use sha2::{Digest, Sha256};
 use std::{
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
 const ROOT: &str = "bambu-connect-handoff";
 const RETENTION: Duration = Duration::from_hours(24);
 const MAX_FILES: usize = 16;
+
+pub(super) fn is_staged_file(data: &Path, path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !path.is_absolute() || path.parent() != Some(data.join(ROOT).as_path()) || !staged_name(name)
+    {
+        return false;
+    }
+    Dir::open(data)
+        .and_then(|data| data.open_dir_nofollow(ROOT))
+        .and_then(|dir| dir.status_nofollow(name))
+        .is_ok_and(|status| status.is_file() && status.links() == 1)
+}
 
 pub(super) struct LocalFiles(pub(super) PathBuf);
 
@@ -154,6 +168,9 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let local = || LocalFiles(data.path().into());
         let path = local().stage_file(1, ".gcode.3mf", b"sliced").unwrap();
+        assert!(is_staged_file(data.path(), &path));
+        assert!(!is_staged_file(data.path(), &path.with_extension("stl")));
+        assert!(!is_staged_file(data.path().parent().unwrap(), &path));
         assert_eq!(fs::read(&path).unwrap(), b"sliced");
         assert_eq!(
             local().stage_file(1, ".gcode.3mf", b"sliced").unwrap(),

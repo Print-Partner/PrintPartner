@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use tauri::Url;
 
 pub mod autostart;
+#[cfg(feature = "desktop_rebuild")]
+pub mod bambu_connect;
 pub use autostart::LaunchArgs;
 pub mod browser;
 pub mod downloads;

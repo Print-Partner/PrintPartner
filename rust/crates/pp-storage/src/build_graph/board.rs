@@ -7,9 +7,10 @@ use crate::{
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{collections::BTreeMap, sync::atomic::AtomicBool, time::Duration};
 
 const PREFIX: &str = "board_notes:";
+pub(crate) const IMPORTED_POSTS: &str = "board_imported_posts";
 const MAX_NOTES: usize = 20;
 const MAX_BODY_BYTES: usize = 2_000;
 
@@ -28,6 +29,18 @@ pub struct Entry {
     pub build_id: i64,
     pub build_name: String,
     pub note: Note,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ImportedPost {
+    pub caption: String,
+    pub title: String,
+    pub created_at: String,
+}
+
+pub struct Feed {
+    pub notes: Vec<Entry>,
+    pub imported_posts: Vec<(String, ImportedPost)>,
 }
 
 pub struct BuildChoice {
@@ -89,7 +102,7 @@ impl Client {
         credential: Credential,
         cancelled: &AtomicBool,
         wait: Duration,
-    ) -> Result<Vec<Entry>, WriterFailure> {
+    ) -> Result<Feed, WriterFailure> {
         self.storage.read("board.list", cancelled, wait, |tx| {
             let tenant = authorize(tx, &credential, self.policy)?;
             let mut query = tx.prepare(
@@ -114,7 +127,24 @@ impl Client {
             entries.sort_unstable_by(|a, b| {
                 (&b.note.created_at, &b.note.id).cmp(&(&a.note.created_at, &a.note.id))
             });
-            Ok(entries)
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
+                    params![tenant.id(), IMPORTED_POSTS],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let posts: BTreeMap<String, ImportedPost> =
+                serde_json::from_str(raw.as_deref().unwrap_or("{}"))
+                    .map_err(anyhow::Error::from)?;
+            let mut imported_posts: Vec<_> = posts.into_iter().collect();
+            imported_posts.sort_unstable_by(|(a_id, a), (b_id, b)| {
+                (&b.created_at, b_id).cmp(&(&a.created_at, a_id))
+            });
+            Ok(Feed {
+                notes: entries,
+                imported_posts,
+            })
         })?
     }
 

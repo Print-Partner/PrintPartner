@@ -103,6 +103,54 @@ fn a_folder_imports_into_a_new_rust_owned_folder() {
 }
 
 #[test]
+fn board_import_keeps_legacy_rows_and_repeats_the_same_projection() {
+    let source = node_folder();
+    execute(
+        &source,
+        "INSERT INTO board_posts (id, author_user_id, caption, title, cover_url, snapshot_json, created_at, hidden_at, hidden_by_user_id)
+         VALUES ('visible', 'synthetic-owner', 'Check the fit', 'Enclosure', 'https://example.test/cover', '{\"recipe\":1}', '2026-11-23T12:00:00.000Z', NULL, NULL),
+                ('hidden', 'synthetic-owner', 'Not for display', 'Spare', NULL, '{}', '2026-11-24T12:00:00.000Z', '2026-11-25', 'synthetic-owner');
+         INSERT INTO board_comments (id, post_id, author_user_id, body, created_at)
+         VALUES ('comment', 'visible', 'synthetic-owner', 'Legacy comment', '2026-11-23');",
+    );
+    let legacy = verify::digests(
+        &Connection::open_with_flags(
+            source.database_path(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap(),
+        None,
+    )
+    .unwrap();
+    let original = state(source.path());
+    let parent = tempfile::tempdir().unwrap();
+    for folder in ["first", "second"] {
+        let destination = parent.path().join(folder);
+        let report = import(source.path(), &destination).unwrap();
+        let database = destination.join(archive::DATABASE_FILE);
+        let copied = verify::digests(&Connection::open(&database).unwrap(), None).unwrap();
+        for table in ["board_posts", "board_comments"] {
+            assert_eq!(copied[table], legacy[table]);
+        }
+        assert_eq!(
+            setting(
+                &database,
+                "SELECT value FROM app_settings WHERE key = 'board_imported_posts' AND tenant_id = 'default'"
+            ),
+            r#"{"visible":{"caption":"Check the fit","title":"Enclosure","created_at":"2026-11-23T12:00:00.000Z"}}"#
+        );
+        assert_eq!(
+            report.tables["app_settings"].to_string(),
+            setting(&database, "SELECT count(*) FROM app_settings")
+        );
+    }
+    assert!(
+        original == state(source.path()),
+        "the import changed its source"
+    );
+}
+
+#[test]
 fn the_import_report_is_saved_without_stored_values() {
     let (_source, parent, report) = imported();
     assert!(report.complete, "{report}");

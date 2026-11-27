@@ -70,7 +70,7 @@ async fn board_http_lists_owner_choices_beyond_the_plan_summary_cap() {
 }
 
 #[tokio::test]
-async fn board_http_proves_owner_and_keeps_legacy_posts_undisplayed_after_reopen() {
+async fn board_http_proves_owner_and_serves_only_converted_posts_after_reopen() {
     let data = Installation::with_authenticated_fixture().unwrap();
     let db = Connection::open(data.database_path()).unwrap();
     db.execute_batch("INSERT INTO board_posts (id, author_user_id, caption, title, snapshot_json, created_at)
@@ -90,16 +90,20 @@ async fn board_http_proves_owner_and_keeps_legacy_posts_undisplayed_after_reopen
     }
     assert_eq!(
         list(&app, Some(OWNER)).await,
-        (StatusCode::OK, json!({"notes": []}))
+        (StatusCode::OK, json!({"notes": [], "imported_posts": []}))
     );
     let (status, note) = create(&app, Some(OWNER), 1, " Check the fit.\nKeep the clips. ").await;
     assert_eq!(status, 200, "{note}");
     assert_eq!(note["build_id"], 1);
     assert_eq!(note["build_name"], "Fixture Build");
     assert_eq!(note["body"], "Check the fit.\nKeep the clips.");
+    db.execute(
+        "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'board_imported_posts', ?1)",
+        [json!({"legacy": {"caption": "Legacy caption", "title": "Legacy title", "created_at": "2025-01-01T00:00:00.000Z"}}).to_string()],
+    ).unwrap();
     assert_eq!(
         list(&app, Some(OTHER)).await,
-        (StatusCode::OK, json!({"notes": []}))
+        (StatusCode::OK, json!({"notes": [], "imported_posts": []}))
     );
     let refusal = create(&app, Some(OTHER), 1, "Foreign write").await;
     assert_eq!(refusal.0, 404);
@@ -109,7 +113,12 @@ async fn board_http_proves_owner_and_keeps_legacy_posts_undisplayed_after_reopen
     let (owner, app) = mount(&data);
     assert_eq!(
         list(&app, Some(OWNER)).await,
-        (StatusCode::OK, json!({"notes": [note]}))
+        (
+            StatusCode::OK,
+            json!({"notes": [note], "imported_posts": [
+                {"id": "legacy", "caption": "Legacy caption", "title": "Legacy title", "created_at": "2025-01-01T00:00:00.000Z"}
+            ]})
+        )
     );
     assert_eq!(
         db.query_row(
@@ -133,7 +142,10 @@ async fn board_http_rejects_invalid_notes_and_caps_each_build() {
         assert_eq!(status, 400, "{problem}");
         assert_eq!(problem["code"], "invalid_board_note");
     }
-    assert_eq!(list(&app, Some(OWNER)).await.1, json!({"notes": []}));
+    assert_eq!(
+        list(&app, Some(OWNER)).await.1,
+        json!({"notes": [], "imported_posts": []})
+    );
     for n in 0..20 {
         assert_eq!(
             create(&app, Some(OWNER), 1, &format!("Note {n}")).await.0,

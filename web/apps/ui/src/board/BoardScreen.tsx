@@ -144,20 +144,48 @@ export function BoardScreen() {
           )}
         </>
       }
-      state={queryScreenState(feed, connection, ({ notes }) => notes.length === 0)}
+      state={queryScreenState(
+        feed,
+        connection,
+        ({ notes, imported_posts }) => notes.length === 0 && imported_posts.length === 0,
+      )}
       empty={{ message: "No Build notes yet." }}
-      renderData={({ notes }) => (
-        <ul className="pp-proposals">
-          {notes.map((note) => (
-            <li key={note.id} className="pp-proposal">
-              <h2>
-                <Link to={`/builds/${note.build_id}`}>{note.build_name}</Link>
-              </h2>
-              <p className="pp-board-note">{note.body}</p>
-              <time dateTime={note.created_at}>{date.format(new Date(note.created_at))}</time>
-            </li>
-          ))}
-        </ul>
+      renderData={({ notes, imported_posts }) => (
+        <>
+          {notes.length > 0 && (
+            <ul className="pp-proposals">
+              {notes.map((note) => (
+                <li key={note.id} className="pp-proposal">
+                  <h2>
+                    <Link to={`/builds/${note.build_id}`}>{note.build_name}</Link>
+                  </h2>
+                  <p className="pp-board-note">{note.body}</p>
+                  <time dateTime={note.created_at}>{date.format(new Date(note.created_at))}</time>
+                </li>
+              ))}
+            </ul>
+          )}
+          {imported_posts.length > 0 && (
+            <section aria-labelledby="imported-board-posts">
+              <h2 id="imported-board-posts">Imported posts</h2>
+              <p>Read-only posts from your previous installation.</p>
+              <ul className="pp-proposals">
+                {imported_posts.map((post) => {
+                  const created = new Date(post.created_at);
+                  return (
+                    <li key={post.id} className="pp-proposal">
+                      <h3>{post.title}</h3>
+                      <p className="pp-board-note">{post.caption}</p>
+                      <time dateTime={post.created_at}>
+                        {Number.isNaN(created.getTime()) ? post.created_at : date.format(created)}
+                      </time>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+        </>
       )}
     />
   );

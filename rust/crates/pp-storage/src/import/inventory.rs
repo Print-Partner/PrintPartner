@@ -111,10 +111,9 @@ pub const ROWS: [Row; 16] = [
     ], "checked with today's typed reader, not rewritten") },
 ];
 
-/// What the import copies byte for byte and no converter may rewrite: slicer
-/// profile text, which Rust reads and keeps opaque (`profiles.rs`), and the
-/// two credentials Rust reads as plain settings (`app_settings.rs`).
-pub const COPIED: [Shape; 8] = [
+/// What the import copies byte for byte and no converter may rewrite.
+pub const COPIED: [Shape; 9] = [
+    Table("board_posts"),
     Column("printer_profiles", "raw_json"),
     Column("printer_profiles", "resolved_flat_config"),
     Column("process_profiles", "resolved_flat_config"),
@@ -130,7 +129,7 @@ pub const COPIED: [Shape; 8] = [
 /// Stored data no Rust code reads. The import keeps it byte for byte, also
 /// for features the product has cut.
 pub const UNUSED: [Shape; 11] = [
-    Table("board_posts"),
+    Table("board_comments"),
     Table("plan_shares"),
     Table("printer_telemetry"),
     Table("slicer_instances"),

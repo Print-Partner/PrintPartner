@@ -143,6 +143,24 @@ async fn published_page_url_keeps_the_redirect_anchor_without_sending_it() {
 }
 
 #[test]
+fn guide_links_resolve_against_the_first_html_base() {
+    let page = page_text(
+        "https://docs.example.com/manual/start.html".into(),
+        br#"<base href="../shared/"><base href="/ignored/"><a href="parts#spacers">Spacers</a><a href="https://printables.com/model/1">Model</a>"#,
+        content_type("text/html"),
+    )
+    .unwrap();
+    assert_eq!(page.url, "https://docs.example.com/manual/start.html");
+    assert_eq!(
+        page.links,
+        [
+            "https://docs.example.com/shared/parts#spacers",
+            "https://printables.com/model/1",
+        ]
+    );
+}
+
+#[test]
 fn bounds_and_attributes_remote_text() {
     let hits = search_hits(
         &serde_json::to_vec(&serde_json::json!({

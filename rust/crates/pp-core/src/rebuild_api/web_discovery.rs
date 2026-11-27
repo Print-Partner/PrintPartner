@@ -236,10 +236,16 @@ fn page_text(url: String, body: &[u8], content: PageContent) -> Result<Page, Err
         let text = document.select_single("body").formatted_text();
         let mut links = Vec::new();
         if let Ok(page) = Url::parse(&url) {
+            let base = document
+                .select_single("base[href]")
+                .attr("href")
+                .and_then(|href| page.join(&href).ok())
+                .filter(|base| !matches!(base.scheme(), "data" | "javascript"))
+                .unwrap_or(page);
             for node in document.select("body a[href]").nodes() {
                 let Some(link) = node
                     .attr("href")
-                    .and_then(|href| page.join(&href).ok())
+                    .and_then(|href| base.join(&href).ok())
                     .and_then(|url| pp_services::guide::web_reference(url.as_str()))
                 else {
                     continue;

@@ -282,7 +282,10 @@ The managed Plate export downloads a ZIP containing one 3MF model per Plate and
 `manifest.json`. Use the current `plate_revision_id` from the Plate workspace.
 The manifest records the accepted Plan and Plate revisions, printer references,
 Required-unit tokens, filament colors from the Plate's accepted Plan revision,
-and the verified Source revision and SHA-256 for each model object. Geometry uses
+and the verified Source revision and SHA-256 for each model object. Accept
+captures the locally saved Spoolman color when the Part's role and filament ID
+match the assignment. Exports never contact Spoolman or read live colors.
+Older revisions without a saved Spoolman color still omit it. Geometry uses
 the saved placement in millimeters; the models do not contain sliced toolpaths.
 A missing or stale revision, an
 explicitly unplaced unit, an invalid layout, or missing or changed Source

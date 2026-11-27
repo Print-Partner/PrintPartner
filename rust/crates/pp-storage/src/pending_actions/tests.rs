@@ -443,7 +443,8 @@ fn schema_51_keeps_a_schema_50_database_and_a_failed_step_leaves_it_there() {
     let path = directory.path();
     sql(
         path,
-        "DROP TABLE pending_actions;
+        "DROP TABLE plan_revision_spoolman_colors;
+         DROP TABLE pending_actions;
          UPDATE app_settings SET value='50' WHERE tenant_id='default' AND key='schema_version';
          CREATE TRIGGER reject_schema51 BEFORE UPDATE OF value ON app_settings
          WHEN NEW.tenant_id = 'default' AND NEW.key = 'schema_version' AND NEW.value = '51'
@@ -466,8 +467,8 @@ fn schema_51_keeps_a_schema_50_database_and_a_failed_step_leaves_it_there() {
 
     sql(path, "DROP TRIGGER reject_schema51");
     let (owner, ready) = WriterOwner::open(path, Limits::default()).unwrap();
-    assert_eq!((ready.version, ready.previous_version), (51, 50));
-    assert_eq!(version(&database), "51");
+    assert_eq!((ready.version, ready.previous_version), (52, 50));
+    assert_eq!(version(&database), "52");
     assert_eq!(users(path), kept);
     let queue = Queue::with(&owner, session);
     queue.stage("a", &[]).unwrap();

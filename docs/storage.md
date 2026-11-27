@@ -102,16 +102,16 @@ The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision
 | --- | --- |
 | No database, an empty file, or no `schema_version` row | `Fresh`: install the full schema. |
 | 31 to 34 (Node; 31 shipped in Print Partner v3.3.0) | `NodeUpgrade`: replay Node's migrations, then the Rust steps. |
-| 35 to 50, `desktop_rebuild` builds only | `RustUpgrade`: run only the later Rust steps. |
-| The build's newest: 35 without `desktop_rebuild`, 51 with it | `Current`: nothing to migrate. |
+| 35 to 51, `desktop_rebuild` builds only | `RustUpgrade`: run only the later Rust steps. |
+| The build's newest: 35 without `desktop_rebuild`, 52 with it | `Current`: nothing to migrate. |
 | 1 to 30, or above the newest (a value above `u64::MAX` counts as `u64::MAX`) | Refused with `IncompatibleSchema`. |
 
 `ticket_t_7_migrations` opens a fresh directory and Node-built schema 31, 32, 33 and 34 databases through the writer and checks each against its named path.
 
 The refusal is terminal. The version is read from the preflight copy, made in a private `.pp-preflight-<id>` folder inside the data folder, before the integrity check, so a refused database, its `-wal` and its `-journal` keep their bytes. The message names the version found, the supported range and the recovery step:
 
-- Too old: `Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to 51). Install Print Partner v3.3.0, start it once so it upgrades the database, then install this release. The database was not changed.`
-- Too new: `Incompatible storage: database schema version 52 is newer than supported version 51 (this release opens schema 31 to 51). Install the Print Partner release that last opened this data folder, or restore a backup made by this release. The database was not changed.`
+- Too old: `Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to 52). Install Print Partner v3.3.0, start it once so it upgrades the database, then install this release. The database was not changed.`
+- Too new: `Incompatible storage: database schema version 53 is newer than supported version 52 (this release opens schema 31 to 52). Install the Print Partner release that last opened this data folder, or restore a backup made by this release. The database was not changed.`
 
 Each runtime stops on it instead of reopening the database:
 

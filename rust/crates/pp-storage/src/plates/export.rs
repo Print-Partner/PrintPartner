@@ -117,8 +117,10 @@ fn materials(
     plan_revision_id: i64,
 ) -> rusqlite::Result<HashMap<i64, AcceptedMaterial>> {
     tx.prepare(
-        "SELECT id,filament_color_id,filament_custom_hex FROM plan_revision_parts
-         WHERE tenant_id=?1 AND revision_id=?2 AND included",
+        "SELECT part.id,part.filament_color_id,COALESCE(part.filament_custom_hex,color.color_hex)
+         FROM plan_revision_parts part
+         LEFT JOIN plan_revision_spoolman_colors color ON color.revision_part_id=part.id
+         WHERE part.tenant_id=?1 AND part.revision_id=?2 AND part.included",
     )?
     .query_map(params![tenant, plan_revision_id], |row| {
         Ok((

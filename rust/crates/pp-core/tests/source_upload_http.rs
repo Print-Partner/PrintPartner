@@ -28,6 +28,11 @@ use tokio::{
 
 const BOUNDARY: &str = "pp-upload-boundary";
 
+#[path = "support/release.rs"]
+mod release;
+#[path = "source_upload_http/transition.rs"]
+mod transition;
+
 struct Server {
     origin: String,
     client: Client,

@@ -342,6 +342,30 @@ After cutover the gateway refuses both aliases; it never sends them to Node
 or starts a Rust replacement job. The managed Plate job and slicer-handoff
 aliases are a separate operation and do not switch here.
 
+**Launcher receipt (GRE-2009).** The Rust desktop launcher and the headless
+loopback server both stream this download directly from the Accepted Plan.
+The same selection produces the same archive after restart if its Source
+bytes still match. A desktop bootstrap cookie alone cannot read the Plan,
+and a changed Source digest produces a problem response, not an attachment.
+The receipt checks exact package members and one selected Required unit.
+
+Both legacy POST aliases return `410 direct_3mf_job_retired` on each Rust
+runtime; calling them before or after restart creates no durable job or
+export file. This is a read, not a replacement worker: there is no work to
+recover, resend or cancel. The test runs with a nonexistent Node executable
+and a disposable Accepted Plan. It does not switch compatibility ownership
+or open a slicer. The [recovery inventory](recovery-transitions.md#other-durable-work-and-app-handoffs)
+lists the separate export groups that still need proof.
+
+Run the launcher and compatibility checks with:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml \
+  -p pp-core --test direct_export_transition \
+  -p pp-gateway --test ticket_t_3_drain_cutover \
+  -E 'binary(direct_export_transition) | test(ticket_t_58_three_mf_direct_cutover)'
+```
+
 #### Local slicer handoff
 
 ```text

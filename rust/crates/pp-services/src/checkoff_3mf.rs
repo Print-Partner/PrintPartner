@@ -14,6 +14,8 @@ use zip::ZipArchive;
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 2_000;
 pub const MAX_LABEL_BYTES: usize = 200;
+const MODEL_RELATION: &str = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
+const MAX_RELATIONSHIPS_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -46,22 +48,38 @@ fn inspect_bounded(bytes: &[u8], max_bytes: usize) -> Result<Vec<Object>, Refusa
     if archive.len() > 4096 {
         return Err(Refusal::Limit);
     }
-    let mut root = None;
-    let mut other = None;
-    let mut multiple = false;
-    for (index, name) in archive.file_names().enumerate() {
-        let name = name.map_err(|_| Refusal::Package)?;
-        if name.eq_ignore_ascii_case("3D/3dmodel.model") {
-            if root.replace(index).is_some() {
-                return Err(Refusal::Package);
-            }
-        } else if name.to_ascii_lowercase().ends_with(".model") {
-            multiple |= other.replace(index).is_some();
+    let index = match archive.index_for_name("_rels/.rels") {
+        Some(index) => {
+            let relations =
+                read_member(&mut archive, index, max_bytes.min(MAX_RELATIONSHIPS_BYTES))?;
+            let target =
+                model_target(std::str::from_utf8(&relations).map_err(|_| Refusal::Package)?)?;
+            archive.index_for_name(&target).ok_or(Refusal::Package)?
         }
-    }
-    let index = root
-        .or(if multiple { None } else { other })
-        .ok_or(Refusal::Package)?;
+        None => {
+            // Older packages can omit the relationship. Only a single model
+            // is unambiguous in that case.
+            let mut only_model = None;
+            for (index, name) in archive.file_names().enumerate() {
+                let name = name.map_err(|_| Refusal::Package)?;
+                if name.to_ascii_lowercase().ends_with(".model")
+                    && only_model.replace(index).is_some()
+                {
+                    return Err(Refusal::Package);
+                }
+            }
+            only_model.ok_or(Refusal::Package)?
+        }
+    };
+    let document = read_member(&mut archive, index, max_bytes)?;
+    model(std::str::from_utf8(&document).map_err(|_| Refusal::Model)?)
+}
+
+fn read_member(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    index: usize,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Refusal> {
     let member = archive.by_index(index).map_err(|_| Refusal::Package)?;
     if member.size() > max_bytes as u64 {
         return Err(Refusal::Limit);
@@ -74,7 +92,69 @@ fn inspect_bounded(bytes: &[u8], max_bytes: usize) -> Result<Vec<Object>, Refusa
     if document.len() > max_bytes {
         return Err(Refusal::Limit);
     }
-    model(std::str::from_utf8(&document).map_err(|_| Refusal::Model)?)
+    Ok(document)
+}
+
+fn model_target(document: &str) -> Result<String, Refusal> {
+    let mut reader = Reader::from_str(document);
+    reader.config_mut().expand_empty_elements = true;
+    let mut seen_root = false;
+    let mut depth = 0usize;
+    let mut target = None;
+    loop {
+        match reader.read_event().map_err(|_| Refusal::Package)? {
+            Event::Start(element) => {
+                match depth {
+                    0 if !seen_root && element.local_name().as_ref() == "Relationships" => {
+                        seen_root = true
+                    }
+                    0 => return Err(Refusal::Package),
+                    1 if element.local_name().as_ref() == "Relationship" => {
+                        if let Some(path) = relation_target(&element)?
+                            && target.replace(path).is_some()
+                        {
+                            return Err(Refusal::Package);
+                        }
+                    }
+                    _ => {}
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth = depth.checked_sub(1).ok_or(Refusal::Package)?,
+            Event::Eof if seen_root && depth == 0 => return target.ok_or(Refusal::Package),
+            Event::DocType(_) | Event::Eof => return Err(Refusal::Package),
+            _ => {}
+        }
+    }
+}
+
+fn relation_target(element: &BytesStart<'_>) -> Result<Option<String>, Refusal> {
+    let (mut is_model, mut target, mut external) = (false, None, false);
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|_| Refusal::Package)?;
+        let value = attribute
+            .normalized_value(XmlVersion::Implicit1_0)
+            .map_err(|_| Refusal::Package)?;
+        match attribute.key.as_ref() {
+            "Type" => is_model = value == MODEL_RELATION,
+            "Target" => target = Some(value.into_owned()),
+            "TargetMode" => external = value != "Internal",
+            _ => {}
+        }
+    }
+    if !is_model {
+        return Ok(None);
+    }
+    let target = target.ok_or(Refusal::Package)?;
+    let path = target.strip_prefix('/').unwrap_or(&target);
+    if external
+        || path.contains([':', '?', '#', '\\', '\0'])
+        || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+        || !path.to_ascii_lowercase().ends_with(".model")
+    {
+        return Err(Refusal::Package);
+    }
+    Ok(Some(path.to_owned()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -450,5 +530,33 @@ mod tests {
             Err(Refusal::Limit)
         );
         assert_eq!(inspect(b"not a zip"), Err(Refusal::Package));
+    }
+
+    #[test]
+    fn inspects_the_declared_root_model_even_when_a_conventional_name_exists() {
+        let package = |relationship: Option<&str>| {
+            let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+            for (path, name) in [("3D/3dmodel.model", "wrong"), ("selected.model", "right")] {
+                archive
+                    .start_file(path, SimpleFileOptions::default())
+                    .unwrap();
+                write!(archive, r#"<model><resources><object id="1" name="{name}">{GEOMETRY}</object></resources></model>"#).unwrap();
+            }
+            if let Some(target) = relationship {
+                archive
+                    .start_file("_rels/.rels", SimpleFileOptions::default())
+                    .unwrap();
+                write!(archive, r#"<Relationships><Relationship Type="{MODEL_RELATION}" Target="{target}"/></Relationships>"#).unwrap();
+            }
+            archive.finish().unwrap().into_inner()
+        };
+        assert_eq!(
+            inspect(&package(Some("/selected.model"))).unwrap()[0].name,
+            "right"
+        );
+        for relationship in [None, Some("/missing.model"), Some("../selected.model")] {
+            assert_eq!(inspect(&package(relationship)), Err(Refusal::Package));
+        }
+        assert_eq!(model_target("</Relationships>"), Err(Refusal::Package));
     }
 }

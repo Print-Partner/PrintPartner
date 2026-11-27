@@ -22,6 +22,8 @@ use pp_storage::working_drafts::{Outcome as DraftOutcome, Request as DraftReques
 
 pub(super) const PROPOSE: &str = "propose_apply_plan_draft";
 pub(super) const REVIEWED: &str = "apply_reviewed_plan_draft";
+pub(super) const ACCEPTED_ELSEWHERE: &str =
+    "This Draft was already accepted by another request. This proposal did not apply.";
 const SUMMARY: &str = "Publish the reviewed Draft as the Accepted Plan.";
 const NOT_FOUND: &str = "Selected Working Plan not found";
 
@@ -223,12 +225,8 @@ impl ProductMcp {
         })
         .await;
         match applied {
-            // Node's `applyResult` answers `applied` for a replay too.
-            Ok(Ok(
-                AcceptOutcome::Applied { receipt }
-                | AcceptOutcome::Existing { receipt }
-                | AcceptOutcome::AlreadyApplied { receipt },
-            )) => {
+            // Only a receipt for this action's idempotency key is a replay.
+            Ok(Ok(AcceptOutcome::Applied { receipt } | AcceptOutcome::Existing { receipt })) => {
                 let receipt = camel_case(json!(receipt));
                 let planning_phase = json!({
                     "kind": "applied",
@@ -248,6 +246,11 @@ impl ProductMcp {
                     },
                 }))
             }
+            Ok(Ok(AcceptOutcome::AlreadyApplied { .. })) => refuse(
+                ACCEPTED_ELSEWHERE,
+                json!({ "apply_result": { "kind": "already_applied" } }),
+                preparing,
+            ),
             Ok(Ok(refused)) => {
                 let kind = json!(refused)["kind"]
                     .as_str()

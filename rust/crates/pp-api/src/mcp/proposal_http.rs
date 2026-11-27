@@ -5,7 +5,7 @@ use crate::accepted::{AcceptedHttpConfig, Gate, build_id, failure, ok_json};
 use crate::loopback::PresentedCredential;
 use crate::mcp::{
     McpClients, ProductMcp,
-    plan_accept::{Refusal, StageRefusal},
+    plan_accept::{ACCEPTED_ELSEWHERE, Refusal, StageRefusal},
 };
 use crate::problem::{self, ProblemCode};
 use axum::{
@@ -166,6 +166,13 @@ async fn apply(
                 StatusCode::CONFLICT,
                 "The draft changed. Review it again and stage a new proposal.",
                 ProblemCode::DraftChanged.as_str(),
+            )
+        }
+        Ok(decision) if decision.body["result"]["apply_result"]["kind"] == "already_applied" => {
+            problem::coded(
+                StatusCode::CONFLICT,
+                ACCEPTED_ELSEWHERE,
+                ProblemCode::AlreadyApplied.as_str(),
             )
         }
         Ok(_) => failure(

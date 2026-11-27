@@ -224,6 +224,18 @@ fn decodes_content_type_parameters_with_optional_whitespace_and_quoted_values() 
     }
 }
 
+#[test]
+fn xhtml_uses_xml_encoding_when_no_http_charset_is_declared() {
+    let body = b"<?xml version='1.0' encoding='windows-1252'?><html><title>Caf\xe9</title><body>\x801</body></html>";
+    let page = page_text(String::new(), body, content_type("application/xhtml+xml")).unwrap();
+    assert_eq!(page.title.as_deref(), Some("Café"));
+    assert_eq!(page.text, "€1");
+    assert_eq!(
+        content_type("application/xhtml+xml; charset=utf-8").decode(body),
+        Err(Error::Encoding)
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn fake_responses_obey_body_limit_deadline_and_capacity() {
     let response = http::Response::builder()

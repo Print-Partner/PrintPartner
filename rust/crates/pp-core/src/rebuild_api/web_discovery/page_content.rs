@@ -1,6 +1,7 @@
 use super::Error;
 use dom_query::Document;
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE, WINDOWS_1252, X_USER_DEFINED};
+use quick_xml::{Reader, events::Event};
 use reqwest::header::HeaderValue;
 use std::borrow::Cow;
 
@@ -43,10 +44,14 @@ impl PageContent {
         let (encoding, skip) = if let Some(bom) = Encoding::for_bom(body) {
             bom
         } else {
-            let encoding = self.charset?.or_else(|| match self.format {
-                Format::Html => html_charset(body),
-                Format::Xhtml | Format::Plain => None,
-            });
+            let encoding = match self.charset? {
+                Some(encoding) => Some(encoding),
+                None => match self.format {
+                    Format::Html => html_charset(body),
+                    Format::Xhtml => xml_charset(body)?,
+                    Format::Plain => None,
+                },
+            };
             (encoding.unwrap_or(UTF_8), 0)
         };
         encoding
@@ -123,4 +128,20 @@ fn html_charset(body: &[u8]) -> Option<&'static Encoding> {
                 e => e,
             })
         })
+}
+
+fn xml_charset(body: &[u8]) -> Result<Option<&'static Encoding>, Error> {
+    if !body.starts_with(b"<?xml") {
+        return Ok(None);
+    }
+    let Event::Decl(declaration) = Reader::from_reader(body)
+        .read_event()
+        .map_err(|_| Error::Encoding)?
+    else {
+        return Ok(None);
+    };
+    declaration
+        .encoding()
+        .map(|label| parse_charset(&label.map_err(|_| Error::Encoding)?))
+        .transpose()
 }

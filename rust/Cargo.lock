@@ -3568,6 +3568,7 @@ dependencies = [
  "pp-source",
  "pp-storage",
  "pp-testkit",
+ "quick-xml",
  "rand 0.9.5",
  "regress 0.11.1",
  "reqwest",

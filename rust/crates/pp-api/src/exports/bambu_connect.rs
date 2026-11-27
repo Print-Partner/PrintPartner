@@ -91,9 +91,10 @@ impl ToProblem for StageFailure {
 }
 
 #[derive(Serialize)]
-struct Staged {
-    filename: String,
-    connect_url: String,
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct BambuConnectStage {
+    pub(crate) filename: String,
+    pub(crate) connect_url: String,
 }
 
 #[derive(Clone)]
@@ -186,7 +187,7 @@ async fn handoff(State(app): State<App>, Path(id): Path<String>, request: Reques
         .blocking(move |_, _| {
             let _permit = permit;
             let path = app.files.stage(print)?;
-            connect_url(&path, &stem).map(|connect_url| Staged {
+            connect_url(&path, &stem).map(|connect_url| BambuConnectStage {
                 filename,
                 connect_url,
             })

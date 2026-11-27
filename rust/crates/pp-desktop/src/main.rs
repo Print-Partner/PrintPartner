@@ -67,6 +67,7 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
     }
     #[cfg(feature = "desktop_rebuild")]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        pp_desktop::bambu_connect::open_bambu_connect,
         pp_desktop::native_actions::open_sponsor,
         pp_desktop::origin_change::sync_portable_settings
     ]);
@@ -126,7 +127,7 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
         let browser_origin = origin.clone();
         let launch_url = core.take_launch_target()?.into_url();
         #[cfg(feature = "desktop_rebuild")]
-        let (sponsor, origin_bridge) = {
+        let (sponsor, origin_bridge, bambu_connect) = {
             let enabled = core.desktop_rebuild().enabled();
             let sponsor = pp_desktop::native_actions::SponsorAction::from_startup(
                 core.desktop_rebuild(),
@@ -154,7 +155,18 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
             } else {
                 pp_desktop::origin_change::OriginBridge::disabled()
             };
-            (sponsor, origin_bridge)
+            let bambu_connect = if enabled {
+                let data = data
+                    .canonicalize()
+                    .context("Desktop data directory unavailable")?;
+                Some(pp_desktop::bambu_connect::BambuConnect::new(
+                    origin.clone(),
+                    data,
+                ))
+            } else {
+                None
+            };
+            (sponsor, origin_bridge, bambu_connect)
         };
         #[cfg(feature = "desktop_rebuild")]
         let origin_notice = origin_bridge.notice().map(str::to_owned);
@@ -168,6 +180,10 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
         #[cfg(feature = "desktop_rebuild")]
         if let Some(capability) = origin_bridge.capability() {
             app.add_capability(capability)?;
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        if let Some(action) = &bambu_connect {
+            app.add_capability(action.capability())?;
         }
         let downloads = pp_desktop::downloads::DownloadPolicy::new(
             origin.clone(),
@@ -188,7 +204,13 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
             };
             app.manage(sponsor);
             app.manage(origin_bridge);
-            builder
+            if let Some(action) = bambu_connect {
+                let builder = builder.initialization_script(action.initialization_script());
+                app.manage(action);
+                builder
+            } else {
+                builder
+            }
         };
         let window = builder
             .title("Print Partner")

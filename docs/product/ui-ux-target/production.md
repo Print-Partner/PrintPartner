@@ -33,6 +33,15 @@ Numbers preserve the [product build order](../ui-ux-target.md#build-order); Line
 
 The UI never sends `force`. Nothing is sent when the tab or sheet opens, when a file is chosen, on reload or on reconnect. A refusal from Send now leaves a Not sent row and shows the core's reason. A lost answer, or a 5xx from Add or Send now (the write may have committed), re-reads the queue and repeats nothing.
 
+## Bambu Connect (GRE-1994)
+
+On local Rust desktop, a Build with Bambu enabled has a separate **Bambu Connect**
+section. Choose a sliced file and press **Stage file**. Only after staging succeeds
+does **Open in Bambu Connect** appear. Opening hands the staged file to Connect;
+choose the printer and press **Send** there. Choosing a new file clears the previous
+Open action. Print Partner never retries staging or opening on its own, writes to the
+send queue, changes Checkoff, or contacts a printer. Bambu LAN stays status-only.
+
 ## Row actions (GRE-1524)
 
 Each send row offers actions for its state. Only Send now on an Upload and start print row asks first; every other action writes on one press.

@@ -37,7 +37,9 @@ Print Partner uses PrusaLink digest authentication for status and file operation
 
 The LAN connection provides status only. Print Partner does not send reverse-engineered MQTT print-start commands.
 
-For file handoff, Production can open Bambu Connect with a staged artifact. Bambu Connect remains responsible for importing and sending the file.
+For file handoff on Rust desktop, choose a sliced file on the Build's Production
+tab and press **Stage file**. After staging, press **Open in Bambu Connect**.
+Bambu Connect remains responsible for importing and sending the file.
 
 The Rust desktop route stages one local `.3mf`, `.gcode.3mf`, `.gcode`, or
 `.gco` file (up to 64 MiB) for a Build with Bambu enabled. It returns an

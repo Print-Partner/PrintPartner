@@ -51,6 +51,11 @@ use std::{
 };
 
 mod bambu_connect;
+
+/// Whether an absolute path names an existing Bambu Connect staged print file.
+pub fn is_bambu_connect_staged_file(data: &std::path::Path, path: &std::path::Path) -> bool {
+    bambu_connect::is_staged_file(data, path)
+}
 mod slicer_inbox;
 mod web_discovery;
 
@@ -1131,6 +1136,9 @@ mod tests {
         // Add to queue reads only a multipart form.
         let no_form =
             status == 415 && body["detail"] == "Send the print file as multipart/form-data";
+        let bambu_disabled = route.name == "stageBambuConnect"
+            && status == 403
+            && body["detail"] == "Bambu Connect is disabled for this Build";
         // A Source ZIP upload answers 202 once the import is recorded. The
         // sample names no Source and sends no multipart body, so the handler
         // refuses before that: unknown Source, missing length, or not a form.
@@ -1169,6 +1177,7 @@ mod tests {
             || stale
             || no_layers
             || no_form
+            || bambu_disabled
             || upload
             || sync_accepted
             || branch_list
@@ -1252,13 +1261,17 @@ mod tests {
         let drafts = draft_router(rebuild, &owner, policy, lifetimes, &origin, "default", None);
         let jobs = job_router(rebuild, &owner, policy, &origin, "default");
         let owner = Arc::new(std::sync::Mutex::new(owner));
-        let reads = read_router(
+        let reads = read_router_with_updates(
             rebuild,
             Arc::clone(&owner),
             routes(&origin),
             &origin,
             "default",
             None,
+            RuntimeInputs {
+                local_desktop: true,
+                ..RuntimeInputs::detached()
+            },
         );
         let farm = farm_and_host_routes(&owner.lock().unwrap(), &origin);
         let uploads = upload_router(Arc::clone(&owner), &origin, Arc::new(NoUploads)).unwrap();

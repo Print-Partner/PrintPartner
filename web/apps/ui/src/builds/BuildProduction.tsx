@@ -6,6 +6,7 @@ import { SENDING_POLL_MS, sendQueueQuery, sendStatus, type QueuedSend } from "..
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
+import { BambuConnectHandoff } from "./BambuConnectHandoff";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
 import { ExportActions } from "./ExportActions";
 import { SendRowActions } from "./SendRowActions";
@@ -138,6 +139,7 @@ export function BuildProduction() {
           <>
             <BuildTabs id={id} />
             <ExportActions build={id} />
+            <BambuConnectHandoff key={id} build={id} />
           </>
         }
         state={state}

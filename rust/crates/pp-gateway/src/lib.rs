@@ -1142,13 +1142,7 @@ async fn handle(
             request.headers(),
         )
         .await;
-        return response.map(|body| {
-            Body::new(TrackedBody {
-                body,
-                _admission: admission,
-                cancelled: Box::pin(state.cancelled.clone().cancelled_owned()),
-            })
-        });
+        return track_response(response, admission, state.cancelled.clone());
     }
 
     let direct_3mf_job = request.method() == "POST"
@@ -1216,13 +1210,7 @@ async fn handle(
                 .and_then(|quota| quota.rejection(request.method() == "HEAD"))
             {
                 legal_summary_cors(&mut response, origin);
-                return response.map(|body| {
-                    Body::new(TrackedBody {
-                        body,
-                        _admission: admission,
-                        cancelled: Box::pin(state.cancelled.clone().cancelled_owned()),
-                    })
-                });
+                return track_response(response, admission, state.cancelled.clone());
             }
             let document =
                 include_str!("../../../../web/apps/server/src/data/legal/LICENSE-SUMMARY.md");
@@ -1246,13 +1234,7 @@ async fn handle(
                 quota.apply(&mut response);
             }
             legal_summary_cors(&mut response, origin);
-            return response.map(|body| {
-                Body::new(TrackedBody {
-                    body,
-                    _admission: admission,
-                    cancelled: Box::pin(state.cancelled.clone().cancelled_owned()),
-                })
-            });
+            return track_response(response, admission, state.cancelled.clone());
         }
         let mut response = (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1398,13 +1380,7 @@ async fn handle(
             response
                 .headers_mut()
                 .insert("cache-control", HeaderValue::from_static("no-store"));
-            response.map(|body| {
-                Body::new(TrackedBody {
-                    body,
-                    _admission: admission,
-                    cancelled: Box::pin(state.cancelled.clone().cancelled_owned()),
-                })
-            })
+            track_response(response, admission, state.cancelled.clone())
         }
         Err(_) => error(
             StatusCode::BAD_GATEWAY,
@@ -2132,6 +2108,14 @@ async fn product_response(
     } else {
         state.cancelled.clone()
     };
+    track_response(response, admission, cancelled)
+}
+
+fn track_response(
+    response: Response<Body>,
+    admission: Admission,
+    cancelled: CancellationToken,
+) -> Response<Body> {
     response.map(|body| {
         Body::new(TrackedBody {
             body,

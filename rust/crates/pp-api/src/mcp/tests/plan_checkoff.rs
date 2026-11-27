@@ -176,3 +176,205 @@ async fn mcp_plan_checkoff_refuses_bad_coordinates_without_staging() {
     assert_eq!(queue["actions"], json!([]));
     assert_eq!(read(&server, &headers).await, state);
 }
+
+const IMPORT: &str = "propose_import_3mf_checkoff";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_sliced_import_reads_only_the_named_synchronized_source_package() {
+    let (server, headers) = fixture().await;
+    let before = read(&server, &headers).await;
+    let (_, unit) = first_unprinted(&before);
+    let bytes = package(&[unit["token"].as_str().unwrap()]);
+    std::fs::write(
+        server
+            ._directory
+            .join("repos/1/revisions/fixture/sliced.3mf"),
+        &bytes,
+    )
+    .unwrap();
+    let args = |path: &str| json!({"plan_id":1,"source_id":1,"path":path});
+    let mut both = args("sliced.3mf");
+    both["content_base64"] = json!("AAAA");
+    for rejected in [
+        both,
+        args("../sliced.3mf"),
+        args("missing.3mf"),
+        json!({
+            "plan_id":1, "content_base64":"", "filename":"empty.3mf",
+        }),
+    ] {
+        assert!(tool(&server, &headers, IMPORT, rejected).await.1);
+    }
+    let (proposal, failed) = tool(&server, &headers, IMPORT, args("sliced.3mf")).await;
+    assert!(!failed, "{proposal}");
+    assert_eq!(proposal["action"]["params"]["filename"], "sliced.3mf");
+    assert_eq!(proposal["object_count"], 1);
+    assert_eq!(read(&server, &headers).await, before);
+}
+
+fn package(tokens: &[&str]) -> Vec<u8> {
+    use std::io::{Cursor, Write};
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("3D/3dmodel.model", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    write!(zip, "<model><resources>").unwrap();
+    for (index, token) in tokens.iter().enumerate() {
+        write!(zip, r#"<object id="{}" name="Slicer object {index}" partnumber="{token}"><mesh>
+            <vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+            <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+            </mesh></object>"#, index + 1).unwrap();
+    }
+    write!(zip, "</resources><build>").unwrap();
+    for index in 1..=tokens.len() {
+        write!(zip, r#"<item objectid="{index}"/>"#).unwrap();
+    }
+    write!(zip, "</build></model>").unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+fn inline(tokens: &[&str]) -> String {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    STANDARD.encode(package(tokens))
+}
+
+fn first_unprinted(plan: &Value) -> (&Value, &Value) {
+    plan["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|part| {
+            part["units"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|unit| unit["completed"] == false)
+                .map(|unit| (part, unit))
+        })
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_sliced_import_previews_reconciles_and_uses_normal_verify_and_undo() {
+    let (server, headers) = fixture().await;
+    let before = read(&server, &headers).await;
+    let (part, unit) = first_unprinted(&before);
+    let token = unit["token"].as_str().unwrap();
+    let (proposal, failed) = tool(
+        &server,
+        &headers,
+        IMPORT,
+        json!({
+            "plan_id":1, "filename":"sliced", "content_base64":inline(&[token, ""]),
+        }),
+    )
+    .await;
+    assert!(!failed, "{proposal}");
+    assert_eq!(
+        proposal["attribution"]["units"][0]["part_id"],
+        part["part_id"]
+    );
+    assert_eq!(
+        proposal["attribution"]["outcomes"][0]["rawName"],
+        "Slicer object 0"
+    );
+    assert!(proposal["action"]["params"].get("content_base64").is_none());
+    assert_eq!(
+        proposal["attribution"]["unmatchedObjectNames"],
+        json!(["Slicer object 1"])
+    );
+    assert_eq!(read(&server, &headers).await, before);
+    let (applied, failed) = confirm(&server, &headers, &proposal).await;
+    assert!(!failed, "{applied}");
+    let link = &applied["result"]["link"];
+    assert_eq!(link["state"], "awaiting_verify");
+    assert_eq!(link["filename"], "sliced.3mf");
+    assert_eq!(read(&server, &headers).await, before);
+    let link_id = link["id"].as_str().unwrap();
+    let (again, failed) = confirm(&server, &headers, &proposal).await;
+    assert!(!failed, "{again}");
+    assert_eq!(again["reconciled"], true);
+    assert_eq!(again["result"]["link"]["id"], link_id);
+    let (verify, failed) = tool(
+        &server,
+        &headers,
+        "propose_verify_printer_checkoff",
+        json!({
+            "link_id":link_id, "decisions":[{
+                "part_id":part["part_id"], "unit_index":unit["unit_index"], "result":"confirmed",
+            }],
+        }),
+    )
+    .await;
+    assert!(!failed, "{verify}");
+    let (receipt, failed) = confirm(&server, &headers, &verify).await;
+    assert!(!failed, "{receipt}");
+    let (reconciled, failed) = confirm(&server, &headers, &proposal).await;
+    assert!(!failed, "{reconciled}");
+    assert_eq!(reconciled["result"]["link"]["state"], "verified");
+    let verified = read(&server, &headers).await;
+    assert_eq!(verified["accepted_basis"], before["accepted_basis"]);
+    assert_eq!(
+        verified["printed_units"].as_u64().unwrap(),
+        before["printed_units"].as_u64().unwrap() + 1
+    );
+    let undo = server
+        .owner
+        .checkoff_progress()
+        .unwrap()
+        .apply(
+            pp_storage::read_model::Credential::Session(Secret::new(FIXTURE_SESSION.into())),
+            Request::UndoBatch {
+                body: json!({"undo_token":receipt["result"]["undo_token"]}),
+            },
+            &AtomicBool::new(false),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+    assert_eq!(undo.status, 200, "{undo:?}");
+    assert_eq!(read(&server, &headers).await, before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_sliced_import_refuses_mixed_tokens_and_rechecks_reviewed_mapping() {
+    let (server, headers) = fixture().await;
+    let before = read(&server, &headers).await;
+    let (part, unit) = first_unprinted(&before);
+    let token = unit["token"].as_str().unwrap();
+    let stale = "ppu_deadbeefdeadbeefdeadbeefdeadbeef";
+    let (rejected, failed) = tool(
+        &server,
+        &headers,
+        IMPORT,
+        json!({
+            "plan_id":1, "content_base64":inline(&[token, stale]),
+        }),
+    )
+    .await;
+    assert!(
+        failed
+            && rejected["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("stale"),
+        "{rejected}"
+    );
+    let (proposal, failed) = tool(
+        &server,
+        &headers,
+        IMPORT,
+        json!({
+            "plan_id":1, "content_base64":inline(&[token]),
+        }),
+    )
+    .await;
+    assert!(!failed, "{proposal}");
+    let (progress, failed) = tool(&server, &headers, PROGRESS, json!({
+        "plan_id":1, "rows":[{"part_id":part["part_id"], "printed_count":unit["unit_index"].as_u64().unwrap()+1}],
+    })).await;
+    assert!(!failed, "{progress}");
+    assert!(!confirm(&server, &headers, &progress).await.1);
+    let after_progress = read(&server, &headers).await;
+    let (refused, failed) = confirm(&server, &headers, &proposal).await;
+    assert!(failed && refused["ok"] == false, "{refused}");
+    assert_eq!(read(&server, &headers).await, after_progress);
+}

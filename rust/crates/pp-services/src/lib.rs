@@ -1,6 +1,8 @@
 //! Move deferred until after #171.
 
 pub mod build_url;
+#[cfg(feature = "desktop_rebuild")]
+pub mod checkoff_3mf;
 pub mod discovery;
 pub mod exports;
 pub mod guide;

@@ -95,6 +95,10 @@ Pass `accepted_basis` as `expected` when proposing with coordinates from a Check
 
 MCP confirmation or the Apply panel records one manual Checkoff burst under `mcp:<action_id>`. MCP returns the burst receipt with `undo_token`; Build History offers the same Undo as the Checkoff tab. Confirming twice does not apply twice, even after Undo. No Plan is published, no printer is contacted, and no stock is changed.
 
+`propose_import_3mf_checkoff` previews a sliced 3MF against the current Accepted Plan. Pass `plan_id` and either `content_base64` with an optional `filename`, or `source_id` and `path` for a 3MF in that Source's current synchronized revision. The package and its model each have a 64 MiB cap; use a Source if the base64 request exceeds MCP's 4 MiB request cap. Rust reads local mesh objects in build order and refuses unsupported component layouts or stale Required-unit tokens rather than guessing.
+
+Confirmation rechecks the Accepted Plan and reviewed mapping, then creates one `awaiting_verify` link. Unmatched names are visible in the preview but do not require verification. Import changes no progress, stores no package bytes, and calls no printer. Only a separate verification can record progress and return an Undo token.
+
 ### `propose_create_build`
 
 `propose_create_build` `{ name, request, urls?, idempotency_key? }` creates a Build together with its Build planning brief (GRE-1441). Each URL in `urls` becomes one evidence item. Rust classifies it the way Node's `classifyBuildUrl` does, and does not guess a role from the request text. No Source is created. The shared catalog's tool description still says the request is verbatim and normalized. Rust trims surrounding whitespace from `request` and stores no separate normalized form. That catalog is exported from Node's tool description (`npm run mcp:catalog -w @print-partner/server`), so regenerating it copies the same sentence until Node's description changes.

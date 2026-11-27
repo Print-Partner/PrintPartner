@@ -494,6 +494,10 @@ fn read_router_with_updates(
         drafts: drafts_client,
         planning: planning_client,
         progress: checkoff_client,
+        sources: owner
+            .lock()
+            .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
+            .source_files(policy)?,
         accepted: accepted_client,
         filaments: filament_client,
         web_discovery: runtime.web_discovery,

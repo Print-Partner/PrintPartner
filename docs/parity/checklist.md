@@ -45,8 +45,8 @@ prompt, not a tool.
 | **Unverified** | No new tool calls or output comparisons were run. The name/schema comparison is against the checked-in catalogs, not a live discovery or compatibility test. | [GRE-1428](https://linear.app/greetz/issue/GRE-1428) tracks the owner’s daily loop, including Build creation with MCP or the UI |
 
 Since that snapshot, [manual Accepted Plan Checkoff](../mcp.md#accepted-plan-checkoff)
-has a Rust read and two proposal handlers. Sliced 3MF Checkoff import is tracked
-[separately](https://linear.app/greetz/issue/GRE-1985).
+has a Rust read and two proposal handlers. The same Rust MCP surface previews
+sliced 3MF attribution and confirms a verify-first Checkoff link without recording progress.
 
 ## UI
 

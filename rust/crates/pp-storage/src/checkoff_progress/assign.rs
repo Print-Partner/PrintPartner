@@ -109,7 +109,22 @@ pub(super) fn assign(
             ..suggestion
         },
     };
+    let Some(link) = record(tx, tenant, &assignment, &attribution, &links::uuid())? else {
+        return refuse("That print file is already assigned");
+    };
+    Ok(Ok(Response::ok(Body::Assigned {
+        link,
+        attribution: Box::new(serde_json::to_value(&attribution)?),
+    })))
+}
 
+pub(super) fn record(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    assignment: &Assignment,
+    attribution: &Attribution,
+    id: &str,
+) -> anyhow::Result<Option<Value>> {
     let now = links::now();
     let link = &assignment.link;
     let filename = links::normalized_filename(&link.filename);
@@ -119,17 +134,17 @@ pub(super) fn assign(
             && open["integration_id"] == link.integration_id.as_str()
             && links::normalized_filename(open["filename"].as_str().unwrap_or_default()) == filename
     }) {
-        return refuse("That print file is already assigned");
+        return Ok(None);
     }
     let mut raw = json!({
-        "id": links::uuid(),
+        "id": id,
         "profile_id": assignment.profile_id,
         "integration_id": link.integration_id,
         "printer_id": link.printer_id,
         "host_name": link.host_name,
         "filename": link.filename,
         "remote_path": link.remote_path,
-        "plan_revision_id": snapshot.revision_id,
+        "plan_revision_id": assignment.plan_revision_id,
         "remote_identity": link.remote_identity,
         "classification": link.classification,
         "units": attribution.units,
@@ -141,7 +156,7 @@ pub(super) fn assign(
         "created_at": now,
     });
     if assignment.retain_unmatched {
-        raw["imported_inventory"] = retained(&attribution, &assignment);
+        raw["imported_inventory"] = retained(attribution, assignment);
     }
     if assignment.completed {
         for (key, value) in [
@@ -159,8 +174,5 @@ pub(super) fn assign(
     let public = links::public(&created);
     all.push(created);
     links::save_all(tx, tenant, all)?;
-    Ok(Ok(Response::ok(Body::Assigned {
-        link: public,
-        attribution: Box::new(serde_json::to_value(&attribution)?),
-    })))
+    Ok(Some(public))
 }

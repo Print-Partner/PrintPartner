@@ -30,7 +30,7 @@ pub(super) fn describe(catalog: &mut Value) {
                 json!({"text": {"type": "string", "maxLength": guide::MAX_GUIDE_BYTES}}),
             ),
             Some(IMPORT) => (
-                "Propose saving untrusted guide evidence as a Source note. Use the exact name from list_sources and pass the guide URL when known. Requires Apply.",
+                "Propose saving untrusted guide evidence as a Source note. Ask for the exact Source name shown in the Library and pass the guide URL when known. Requires Apply.",
                 json!({
                     "source_name": {"type": "string"},
                     "title": {"type": "string", "description": "Defaults to Guide: <Source>", "maxLength": pp_storage::source_notes::MAX_TITLE_BYTES},
@@ -131,7 +131,7 @@ const INVALID_NOTE: Refusal = Refusal::new(
 );
 const MISSING_SOURCE: Refusal = Refusal::new(
     Code::SourceNotFound,
-    "Source not found or changed. Call list_sources for its current name.",
+    "Source not found or changed. Ask for its current name as shown in the Library.",
 );
 
 fn refuse(refusal: Refusal) -> ToolResult {

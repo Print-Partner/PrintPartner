@@ -1100,9 +1100,13 @@ mod tests {
             && body["parent_build_id"].as_i64().is_some();
         let missing_refresh_draft =
             route.name == "refreshDraft" && status == 409 && body["code"] == "draft_changed";
+        let missing_proposed_draft = route.name == "stageDraftProposal"
+            && status == 409
+            && body["detail"] == "Selected Working Plan not found";
         status == 200
             || duplicated
             || missing_refresh_draft
+            || missing_proposed_draft
             || handler_not_found(status, body)
             || stale
             || no_layers
@@ -1115,8 +1119,8 @@ mod tests {
     }
 
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
-    /// print, queue item or Source to set as a Build's base, so those handlers answer
-    /// their own 404 with a code or detail.
+    /// print, proposal, queue item or Source to set as a Build's base, so those
+    /// handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
         const CODES: [&str; 8] = [
             "integration_not_found",
@@ -1128,7 +1132,7 @@ mod tests {
             "source_not_found",
             "deduction_not_found",
         ];
-        const DETAILS: [&str; 7] = [
+        const DETAILS: [&str; 8] = [
             "beds[0]: Checkoff link not found",
             "Project not found",
             "Checkoff burst not found",
@@ -1136,6 +1140,7 @@ mod tests {
             "Unattributed print not found",
             "Job not found",
             "Queue item not found",
+            "Proposal not found",
         ];
         status == 404
             && (CODES.iter().any(|code| body["code"] == *code)

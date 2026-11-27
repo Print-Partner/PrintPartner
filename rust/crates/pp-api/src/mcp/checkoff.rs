@@ -26,36 +26,17 @@ fn js_trim(s: &str) -> &str {
 
 /// Product tools on storage; every other tool still has no Rust port.
 pub(super) struct CheckoffDomain {
-    progress: ProgressClient,
+    pub(super) progress: ProgressClient,
+    pub(super) sources: pp_storage::source_files::SourceFilesClient,
     pub(super) accepted: pp_storage::read_model::ReadClient,
     pub(super) wait: Duration,
     pub(super) builds: pp_storage::build_graph::BuildGraphClient,
     pub(super) drafts: pp_storage::working_drafts::WorkingDraftClient,
     pub(super) farm: super::McpFarm,
-    caller: Option<PresentedCredential>,
+    pub(super) caller: Option<PresentedCredential>,
 }
 
 impl CheckoffDomain {
-    pub(super) fn new(
-        progress: ProgressClient,
-        accepted: pp_storage::read_model::ReadClient,
-        builds: pp_storage::build_graph::BuildGraphClient,
-        drafts: pp_storage::working_drafts::WorkingDraftClient,
-        farm: super::McpFarm,
-        wait: Duration,
-        caller: Option<PresentedCredential>,
-    ) -> Self {
-        Self {
-            progress,
-            accepted,
-            builds,
-            drafts,
-            farm,
-            wait,
-            caller,
-        }
-    }
-
     pub(super) fn caller(&self) -> Result<PresentedCredential, String> {
         self.caller
             .clone()
@@ -137,6 +118,9 @@ impl DomainPort for CheckoffDomain {
         if name == VERIFY {
             return self.propose(args);
         }
+        if name == super::sliced_checkoff::PROPOSE {
+            return self.propose_sliced_checkoff(args);
+        }
         if super::plan_checkoff::TOOLS.contains(&name) {
             return self.plan_checkoff(name, args);
         }
@@ -168,6 +152,9 @@ impl DomainPort for CheckoffDomain {
     }
 
     fn apply_action(&self, action: &ProposedAction) -> Result<Value, String> {
+        if action.action_type == super::sliced_checkoff::PROPOSE {
+            return self.apply_sliced_checkoff(action);
+        }
         if super::plan_checkoff::is_proposal(&action.action_type) {
             return self.apply_plan_checkoff(action);
         }
@@ -229,7 +216,7 @@ impl DomainPort for CheckoffDomain {
             } => burst,
             Response {
                 status: 400 | 404, ..
-            } => return Ok(None),
+            } => return self.reconcile_sliced_checkoff(action_id),
             _ => return Err(UNAVAILABLE.into()),
         };
         let (ok, detail) = match burst["state"].as_str() {

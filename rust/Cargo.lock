@@ -3735,6 +3735,7 @@ dependencies = [
  "hex",
  "icu_collator",
  "plist",
+ "quick-xml",
  "rand 0.9.5",
  "regex",
  "regress 0.11.1",

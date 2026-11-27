@@ -106,6 +106,7 @@ impl Served {
             McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             auth.clone(),
             McpClients {
+                sources: owner.source_files(mcp_rpc::policy()).unwrap(),
                 builds: owner
                     .build_graph_with_observations(
                         mcp_rpc::policy(),

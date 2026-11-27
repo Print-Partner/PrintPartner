@@ -26,6 +26,7 @@ use crate::{
 use rusqlite::{OptionalExtension, Transaction};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
     time::Duration,
@@ -139,6 +140,66 @@ struct Current {
 }
 
 impl SourceFilesClient {
+    /// Reads a package from the Source's current revision without following
+    /// links or retaining more than the caller's byte cap.
+    pub fn read_model_package(
+        &self,
+        credential: Credential,
+        source_id: i64,
+        path: &str,
+        max_bytes: usize,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Vec<u8>, PackageError> {
+        if path.len() > 4096
+            || !crate::read_model::graph::safe_path(path)
+            || path.contains([':', '\\'])
+            || !path.to_ascii_lowercase().ends_with(".3mf")
+        {
+            return Err(PackageError::File);
+        }
+        let (_, root) = self
+            .snapshot(
+                "source_files.read_package",
+                &credential,
+                source_id,
+                cancelled,
+                wait,
+            )?
+            .ok_or(PackageError::File)?;
+        let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+        let mut directory = pp_os::Dir::open(&root).map_err(|_| PackageError::File)?;
+        for component in parent.split('/').filter(|component| !component.is_empty()) {
+            directory = directory
+                .open_dir_nofollow(component)
+                .map_err(|_| PackageError::File)?;
+        }
+        if !directory
+            .status_nofollow(name)
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return Err(PackageError::File);
+        }
+        let file = directory
+            .open_read_nofollow(name)
+            .map_err(|_| PackageError::File)?;
+        let metadata = file.metadata().map_err(|_| PackageError::File)?;
+        if !metadata.is_file() {
+            return Err(PackageError::File);
+        }
+        if metadata.len() > max_bytes as u64 {
+            return Err(PackageError::Limit);
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take((max_bytes as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|_| PackageError::File)?;
+        if bytes.len() > max_bytes {
+            return Err(PackageError::Limit);
+        }
+        Ok(bytes)
+    }
+
     /// Leaves `name` out of the list when it sits at a revision's root: an
     /// entry the snapshot writer keeps there, such as `pp_source::MANIFEST`.
     pub fn skipping_at_root(mut self, name: &str) -> Self {
@@ -195,6 +256,16 @@ impl SourceFilesClient {
             .ok_or(SourceFilesError::SnapshotUnavailable)?;
         Ok(Some((revision_id, root)))
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PackageError {
+    #[error("The current Source revision has no 3MF file at that path")]
+    File,
+    #[error("The 3MF exceeds the file size limit")]
+    Limit,
+    #[error(transparent)]
+    Source(#[from] SourceFilesError),
 }
 
 fn current(

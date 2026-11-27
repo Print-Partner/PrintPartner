@@ -42,6 +42,8 @@ pub mod print_file;
 #[cfg(feature = "desktop_rebuild")]
 pub mod reconcile;
 #[cfg(feature = "desktop_rebuild")]
+pub mod sliced_import;
+#[cfg(feature = "desktop_rebuild")]
 mod unattributed;
 #[cfg(feature = "desktop_rebuild")]
 pub use unattributed::{DismissUndo, UndoDismissError};

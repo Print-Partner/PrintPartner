@@ -168,6 +168,7 @@ struct Reads {
     drafts: WorkingDraftClient,
     planning: PlanningClient,
     progress: ProgressClient,
+    sources: pp_storage::source_files::SourceFilesClient,
     accepted: ReadClient,
     filaments: pp_storage::filaments::FilamentClient,
     web_discovery: Option<Arc<dyn web_discovery::Discovery>>,
@@ -187,6 +188,7 @@ pub struct McpClients {
     pub drafts: WorkingDraftClient,
     pub planning: PlanningClient,
     pub progress: ProgressClient,
+    pub sources: pp_storage::source_files::SourceFilesClient,
     pub accepted: ReadClient,
     pub filaments: pp_storage::filaments::FilamentClient,
     pub web_discovery: Option<Arc<dyn web_discovery::Discovery>>,
@@ -202,6 +204,7 @@ impl McpClients {
             drafts: self.drafts,
             planning: self.planning,
             progress: self.progress,
+            sources: self.sources,
             accepted: self.accepted,
             filaments: self.filaments,
             web_discovery: self.web_discovery,
@@ -388,6 +391,7 @@ pub(crate) fn test_router_watching(
         drafts,
         planning,
         progress,
+        sources: owner.source_files(policy).unwrap(),
         accepted,
         filaments: owner.filaments_with_policy(policy).unwrap(),
         web_discovery: config.web_discovery.clone(),
@@ -589,6 +593,7 @@ impl ProductMcp {
     ) -> Result<T, ErrorData> {
         let Reads {
             progress,
+            sources,
             accepted,
             builds,
             drafts,
@@ -597,8 +602,16 @@ impl ProductMcp {
             ..
         } = self.reads.clone();
         tokio::task::spawn_blocking(move || {
-            let domain =
-                CheckoffDomain::new(progress, accepted, builds, drafts, farm, wait, presented);
+            let domain = CheckoffDomain {
+                progress,
+                sources,
+                accepted,
+                builds,
+                drafts,
+                farm,
+                wait,
+                caller: presented,
+            };
             work(&McpTools::new(domain, None))
         })
         .await
@@ -852,6 +865,7 @@ mod rebuild_plan;
 mod role_filament;
 #[path = "mcp/session_keys.rs"]
 mod session_keys;
+mod sliced_checkoff;
 #[path = "mcp/source_roles.rs"]
 mod source_roles;
 #[path = "mcp/write_result.rs"]

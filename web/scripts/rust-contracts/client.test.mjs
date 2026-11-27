@@ -61,7 +61,7 @@ test("routes cover Builds, layers, v2 drafts and health, all generated from pp-a
   const covered = Object.values(routes).map((route) => `${route.method} ${route.path}`);
   for (const required of ["GET /api/v2/plans", "GET /api/v2/plans/{id}", "GET /api/v2/plans/{id}/layers", "GET /api/v2/plans/{id}/drafts", "GET /api/v2/plans/{id}/drafts/{draft_id}", "PATCH /api/v2/plans/{id}/drafts/{draft_id}/parts", "POST /api/v2/plans/{id}/drafts/{draft_id}/abandon", "GET /health"]) assert(covered.includes(required), required);
   // Health and the account routes a signed-out owner needs answer without a credential.
-  const anonymous = ["readHealth", "readAuthStatus", "signIn", "registerOwner", "signOut"];
+  const anonymous = ["readHealth", "readAuthStatus", "signIn", "registerOwner", "signOut", "requestPasswordReset", "redeemPasswordReset"];
   for (const name of anonymous) assert.equal(routes[name].auth, "none", name);
   assert(Object.entries(routes).filter(([name]) => !anonymous.includes(name)).every(([, route]) => route.auth === "credential"));
   assert.equal(routePath("editDraftParts", { id: 7, draft_id: Number.MAX_SAFE_INTEGER }), "/api/v2/plans/7/drafts/9007199254740991/parts");
@@ -71,6 +71,11 @@ test("routes cover Builds, layers, v2 drafts and health, all generated from pp-a
   assert.throws(() => routePath("undoFarmLogEntry", { id: "" }), RangeError);
   assert.throws(() => routePath("undoFarmLogEntry", { id: 1 }), RangeError);
   assert.throws(() => routePath("readBuild", { id: "1" }), RangeError);
+});
+
+test("password recovery uses the Rust auth paths", () => {
+  assert.equal(routePath("requestPasswordReset", {}), "/auth/forgot-password");
+  assert.equal(routePath("redeemPasswordReset", {}), "/auth/reset-password");
 });
 
 test("every DTO has accepted Rust fixtures", () => {
@@ -119,6 +124,7 @@ const optionalMembers = {
   TlsPin: new Set(["sha256_prefix", "pinned_at"]),
   Problem: new Set(["code", "detail", "errors"]),
   Health: new Set(["modules", "degraded_detail", "single_user_auth", "single_user_setup_required", "owner_mapping_required", "github_oauth_configured", "discord_oauth_configured"]),
+  AuthStatus: new Set(["recovery_email_available"]),
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),

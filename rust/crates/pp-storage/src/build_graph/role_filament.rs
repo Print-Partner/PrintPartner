@@ -181,8 +181,6 @@ impl BuildGraphClient {
     }
 }
 
-/// Spoolman's effective setting for `build`: the user's choice under the
-/// Build's Plan override, as Checkoff's deduction reads it.
 fn check_assignment(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -195,8 +193,10 @@ fn check_assignment(
     stored_brief::<RoleFilamentError>(tx, tenant, build).map(drop)
 }
 
+/// Spoolman's effective setting for `build`: the user's choice under the
+/// Build's Plan override, as Checkoff's deduction reads it.
 fn spoolman_on(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Transaction<'_>,
     tenant: &str,
     build: pp_domain::PositiveId,
 ) -> Result<(), RoleFilamentError> {

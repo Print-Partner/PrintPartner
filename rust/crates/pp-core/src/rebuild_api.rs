@@ -473,14 +473,8 @@ fn read_router_with_updates(
         accepted: accepted_client,
         farm: mcp_farm(farm_clients, runtime.farm, settings)?,
     };
-    let proposals = product_proposal_routes(
-        config.clone(),
-        mcp_config(origin, api_key_tenant, runtime.server)?,
-        auth_client.clone(),
-        proposal_clients,
-    );
     Ok(Some(
-        auth_router(auth.http, auth_client, auth.providers, auth.mail)
+        auth_router(auth.http, auth_client.clone(), auth.providers, auth.mail)
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
@@ -493,7 +487,12 @@ fn read_router_with_updates(
             .merge(events)
             .merge(checkoff)
             .merge(plates)
-            .merge(proposals),
+            .merge(product_proposal_routes(
+                config,
+                mcp_config(origin, api_key_tenant, runtime.server)?,
+                auth_client,
+                proposal_clients,
+            )),
     ))
 }
 

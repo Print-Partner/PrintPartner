@@ -388,14 +388,15 @@ async fn me(State(app): State<App>, headers: HeaderMap) -> Result<Response, Fail
         _ => Err(Failure(StatusCode::UNAUTHORIZED, "Not authenticated")),
     }
 }
-/// Whether the owner account still has to be created, so the UI can tell
-/// first run from signed out. It needs no session and names no account.
+/// First-run state and installation-wide recovery availability; no account details.
 async fn status(State(app): State<App>) -> Result<Response, Failure> {
     let Outcome::Status(status) = invoke(&app.auth, Request::Status).await? else {
         unreachable!()
     };
     Ok(wire::json_response(json!(wire::AuthStatus {
         setup_required: status.single_user_setup_required,
+        recovery_email_available: (app.config.public_origin.is_some() && app.mail.configured())
+            .then_some(true),
     })))
 }
 async fn register(
@@ -466,8 +467,7 @@ async fn forgot(
     let value = body(input)?;
     let email = email(&value);
     valid_email(&email)?;
-    let mut result =
-        json!({"ok":true,"message":"If an account exists for that email, a reset link was sent."});
+    let mut result = json!(wire::ResetRequested::GENERIC);
     let origin = app.config.public_origin.as_deref().or_else(|| {
         (app.config.dev_reset_exposure && !app.mail.configured())
             .then_some(app.config.origin.as_str())

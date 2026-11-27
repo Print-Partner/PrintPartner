@@ -219,6 +219,10 @@ async fn replay(restore_consumed_before: Option<&str>) -> Vec<Value> {
         });
         if let Some(response) = response {
             let status = response.status().as_u16();
+            let is_problem = response
+                .headers()
+                .get("content-type")
+                .is_some_and(|value| value == "application/problem+json");
             let session = response
                 .headers()
                 .get_all("set-cookie")
@@ -234,6 +238,17 @@ async fn replay(restore_consumed_before: Option<&str>) -> Vec<Value> {
                 .find(|value| !value.is_empty())
                 .map(str::to_owned);
             let mut body: Value = pp_api::problem::without_envelope(response.json().await.unwrap());
+            // Rust's problem response adds a code for the UI; Node's fixture has only detail.
+            if is_problem
+                && status == 400
+                && matches!(id, "reset_unknown_token" | "replay_a" | "reset_expired_b")
+            {
+                assert_eq!(
+                    body.as_object_mut().unwrap().remove("code"),
+                    Some(json!("reset_link_invalid")),
+                    "{id}"
+                );
+            }
             if body["user"]["user_id"].is_string() {
                 body["user"]["user_id"] = json!("<user_id>");
             }

@@ -5,12 +5,16 @@ import { isSameOriginPath } from "../core/client";
 export const HOME = "/today";
 export const SIGN_IN = "/login";
 export const SETUP = "/setup";
+export const FORGOT_PASSWORD = "/forgot-password";
+export const RESET_PASSWORD = "/reset-password";
 
 const BASE = "http://ui.invalid";
 
-/** The sign-in and setup screens. Routes match without regard to case, so this does too. */
+/** Public account screens are never post-sign-in destinations. */
 export const isAuthPath = (pathname: string) =>
-  [SIGN_IN, SETUP].includes(pathname.toLowerCase());
+  [SIGN_IN, SETUP, FORGOT_PASSWORD, RESET_PASSWORD].includes(
+    pathname.toLowerCase().replace(/\/+$/, ""),
+  );
 
 /**
  * The page to open after sign-in: `raw` when it is a same-origin path to a screen this
@@ -29,8 +33,12 @@ export function nextPath(raw: string | null, routes: RouteObject[]): string {
   const path = `${url.pathname}${url.search}${url.hash}`;
   if (url.origin !== BASE || !isSameOriginPath(path) || isAuthPath(url.pathname)) return HOME;
   const leaf = matchRoutes(routes, url.pathname)?.at(-1)?.route;
-  if (!leaf || leaf.path === "*" || leaf.path === SIGN_IN || leaf.path === SETUP) return HOME;
+  if (!leaf || leaf.path === "*" || (leaf.path && isAuthPath(leaf.path))) return HOME;
   return path;
+}
+
+export function withNext(pathname: string, next?: string): string {
+  return next ? `${pathname}?${new URLSearchParams({ next })}` : pathname;
 }
 
 /** The sign-in screen's address that returns to this page afterwards. */
@@ -44,5 +52,5 @@ export function signInFor({
   hash?: string;
 }): string {
   if (pathname === "/" || isAuthPath(pathname)) return SIGN_IN;
-  return `${SIGN_IN}?${new URLSearchParams({ next: `${pathname}${search}${hash}` })}`;
+  return withNext(SIGN_IN, `${pathname}${search}${hash}`);
 }

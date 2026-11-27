@@ -250,6 +250,16 @@ async fn accepted_reset_delivery_drains_after_http_shutdown() {
         .unwrap();
     });
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let status = client
+        .get(format!("{origin}/auth/status"))
+        .header("Origin", &origin)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(status["recovery_email_available"], true);
     assert_eq!(
         client
             .post(format!("{origin}/auth/register"))

@@ -320,6 +320,71 @@ fn kdf_completion_after_owner_close_returns_stopped() {
 }
 
 #[test]
+fn expired_reset_link_preserves_password_and_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
+    let client = open_client(&owner);
+    let email = "recovery@example.test";
+    let password = "fixture-password";
+    let Outcome::Session { token: session, .. } = run(
+        &client,
+        Request::Register {
+            email: email.into(),
+            display_name: "Fixture".into(),
+            password: Secret::new(password.into()),
+        },
+    )
+    .unwrap() else {
+        panic!("session expected")
+    };
+    let Outcome::ResetToken(Some(token)) = run(
+        &client,
+        Request::RequestReset {
+            email: email.into(),
+        },
+    )
+    .unwrap() else {
+        panic!("reset token expected")
+    };
+    let db = Connection::open(directory.path().join("print-partner.db")).unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE password_reset_tokens SET expires_at='2000-01-01T00:00:00Z' WHERE id=?1",
+            [crypto::digest(token.expose())],
+        )
+        .unwrap(),
+        1
+    );
+    assert!(matches!(
+        run(
+            &client,
+            Request::ResetPassword {
+                token,
+                replacement: Secret::new("fixture-replacement".into()),
+            },
+        )
+        .unwrap(),
+        Outcome::Changed(false)
+    ));
+    assert!(matches!(
+        run(&client, Request::ResolveSession { token: session }).unwrap(),
+        Outcome::User(Some(_))
+    ));
+    assert!(matches!(
+        run(
+            &client,
+            Request::Login {
+                email: email.into(),
+                password: Secret::new(password.into()),
+            },
+        )
+        .unwrap(),
+        Outcome::Session { .. }
+    ));
+    owner.shutdown().unwrap();
+}
+
+#[test]
 fn ticket_t_17_transaction_cas_rejects_verified_login_after_public_reset() {
     let _serial = RUNTIME_TEST
         .lock()

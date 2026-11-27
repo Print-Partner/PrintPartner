@@ -1072,7 +1072,9 @@ mod tests {
         match route.auth {
             pp_api::client_contract::ClientAuth::Credential => status == 401,
             pp_api::client_contract::ClientAuth::None => {
-                status == 200 || owner_exists(route, status, body)
+                status == 200
+                    || owner_exists(route, status, body)
+                    || invalid_reset(route, status, body)
             }
         }
     }
@@ -1134,6 +1136,15 @@ mod tests {
             || branch_list
             || restore
             || owner_exists(route, status, body)
+            || invalid_reset(route, status, body)
+    }
+
+    fn invalid_reset(
+        route: &pp_api::client_contract::ClientRoute,
+        status: u16,
+        body: &Value,
+    ) -> bool {
+        route.name == "redeemPasswordReset" && status == 400 && body["code"] == "reset_link_invalid"
     }
 
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,

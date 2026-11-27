@@ -49,10 +49,14 @@ async function settle(page, path) {
   try {
     await page.waitForFunction(
       () => {
-        const main = document.querySelector("main") ?? document.body;
-        // The frame polls /health; a shot under the Offline banner is not evidence.
-        if (!document.querySelector('.pp-connection[data-status="online"]')) return false;
+        const main = document.querySelector("main");
         if (!main || !main.querySelector("h1")) return false;
+        // Auth screens sit outside the frame and read /auth/status instead.
+        if (main.classList.contains("pp-auth")) {
+          if (!main.hasAttribute("data-ready")) return false;
+        } else if (!document.querySelector('.pp-connection[data-status="online"]')) {
+          return false;
+        }
         if (main.querySelector('[aria-busy="true"]')) return false;
         return !/(^|\n)\s*Loading\b/.test(main.innerText);
       },

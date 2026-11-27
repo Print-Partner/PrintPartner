@@ -592,6 +592,26 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         auth: ClientAuth::None,
         ..route("signOut", "POST", "/auth/logout", None, "SignedOut")
     },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "requestPasswordReset",
+            "POST",
+            "/auth/forgot-password",
+            Some("RequestPasswordReset"),
+            "ResetRequested",
+        )
+    },
+    ClientRoute {
+        auth: ClientAuth::None,
+        ..route(
+            "redeemPasswordReset",
+            "POST",
+            "/auth/reset-password",
+            Some("RedeemPasswordReset"),
+            "SignedIn",
+        )
+    },
     route(
         "createInstallationBackup",
         "POST",
@@ -789,6 +809,18 @@ pub(crate) mod codegen {
         )?;
         schema("SignedIn", schemars::schema_for!(crate::auth::SignedIn))?;
         schema("SignedOut", schemars::schema_for!(crate::auth::SignedOut))?;
+        schema(
+            "ResetRequested",
+            schemars::schema_for!(crate::auth::ResetRequested),
+        )?;
+        schema(
+            "RequestPasswordReset",
+            schemars::schema_for!(crate::auth::RequestPasswordReset),
+        )?;
+        schema(
+            "RedeemPasswordReset",
+            schemars::schema_for!(crate::auth::RedeemPasswordReset),
+        )?;
         schema(
             "SignInRequest",
             schemars::schema_for!(crate::auth::SignInRequest),

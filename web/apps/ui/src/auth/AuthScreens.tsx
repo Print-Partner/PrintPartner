@@ -2,19 +2,23 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router";
 import { CoreError } from "../core/client";
-import { readCore, writeCore } from "../core/rust";
+import { readCore, writeCore, writeCoreAnswer } from "../core/rust";
 import { routes } from "../routes";
 import {
   MISMATCH,
   OWNER_EXISTS,
   OwnerExists,
+  PASSWORD_TOO_SHORT,
+  RESET_INVALID,
+  RESET_REQUESTED,
+  recoveryProblem,
   setupProblem,
   signInProblem,
   statusProblem,
 } from "./messages";
-import { HOME, SETUP, SIGN_IN, nextPath } from "./next";
+import { FORGOT_PASSWORD, HOME, RESET_PASSWORD, SETUP, SIGN_IN, nextPath, withNext } from "./next";
 
-/** Whether the owner account still has to be created. Never cached between visits. */
+/** Installation-wide auth status. Never cached between visits. */
 function useAuthStatus() {
   return useQuery({
     queryKey: ["auth", "status"],
@@ -183,6 +187,9 @@ export function LoginScreen() {
           </button>
         </form>
       )}
+      {status.isSuccess && (
+        <Link to={withNext(FORGOT_PASSWORD, next === HOME ? undefined : next)}>Forgot password?</Link>
+      )}
     </AuthLayout>
   );
 }
@@ -257,6 +264,117 @@ export function SetupScreen() {
           </button>
         </form>
       )}
+    </AuthLayout>
+  );
+}
+
+export function ForgotPasswordScreen() {
+  const [params] = useSearchParams();
+  const next = nextPath(params.get("next"), routes);
+  const status = useAuthStatus();
+  const available = status.data?.recovery_email_available === true;
+  const [requested, setRequested] = useState(false);
+  const submit = useSubmit(async (form) => {
+    await writeCore("requestPasswordReset", {}, { email: text(form, "email") });
+    setRequested(true);
+  }, (error) => recoveryProblem(error, false));
+
+  return (
+    <AuthLayout title="Reset your password" status={status}>
+      <StatusProblem status={status} />
+      {status.isSuccess && !available && (
+        <p>Password reset email is not configured for this installation.</p>
+      )}
+      {available && !requested && (
+        <form className="pp-auth-form" onSubmit={submit.onSubmit}>
+          <p>Enter the email address you use to sign in.</p>
+          <Field label="Email" name="email" type="email" autoComplete="email" />
+          {submit.problem && <p role="alert" className="pp-auth-problem">{submit.problem}</p>}
+          <button
+            type="submit"
+            className="pp-button pp-button-primary"
+            aria-disabled={submit.busy || undefined}
+          >
+            {submit.busy ? "Requesting link…" : "Request reset link"}
+          </button>
+        </form>
+      )}
+      {requested && <p role="status">{RESET_REQUESTED}</p>}
+      <Link to={withNext(SIGN_IN, next === HOME ? undefined : next)}>Back to sign-in</Link>
+    </AuthLayout>
+  );
+}
+
+export function ResetPasswordScreen() {
+  const { search, hash } = useLocation();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [token] = useState(() => new URLSearchParams(search).get("token")?.trim());
+  const status = useAuthStatus();
+  const problemId = useId();
+  const [validation, setValidation] = useState<string | null>(null);
+  const submit = useSubmit(async (form) => {
+    if (!token) return;
+    const password = text(form, "password");
+    const problem = password.length < 8
+      ? PASSWORD_TOO_SHORT
+      : password !== text(form, "confirm") ? MISMATCH : null;
+    setValidation(problem);
+    if (problem) return;
+    await writeCoreAnswer("redeemPasswordReset", {}, { redirect: "error" }, { token, password });
+    queryClient.clear();
+    await navigate(HOME, { replace: true });
+  }, (error) => recoveryProblem(error, true));
+
+  // Keep the credential only in this screen, not in the current history entry.
+  useEffect(() => {
+    if (search || hash) void navigate(RESET_PASSWORD, { replace: true });
+  }, [search, hash, navigate]);
+
+  const problem = validation ?? submit.problem;
+  const invalid = !token || submit.problem === RESET_INVALID;
+  return (
+    <AuthLayout title="Choose a new password" status={status}>
+      {invalid ? (
+        <>
+          <p role="alert" className="pp-auth-problem">{RESET_INVALID}</p>
+          <Link to={FORGOT_PASSWORD}>Request a new reset link</Link>
+        </>
+      ) : (
+        <>
+          <StatusProblem status={status} />
+          {status.isSuccess && (
+            <form className="pp-auth-form" onSubmit={submit.onSubmit}>
+              <Field
+                label="New password"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                hint="At least 8 characters."
+                invalid={validation === PASSWORD_TOO_SHORT}
+                describedBy={validation === PASSWORD_TOO_SHORT ? problemId : undefined}
+              />
+              <Field
+                label="New password again"
+                name="confirm"
+                type="password"
+                autoComplete="new-password"
+                invalid={validation === MISMATCH}
+                describedBy={validation === MISMATCH ? problemId : undefined}
+              />
+              {problem && <p id={problemId} role="alert" className="pp-auth-problem">{problem}</p>}
+              <button
+                type="submit"
+                className="pp-button pp-button-primary"
+                aria-disabled={submit.busy || undefined}
+              >
+                {submit.busy ? "Resetting password…" : "Reset password"}
+              </button>
+            </form>
+          )}
+        </>
+      )}
+      <Link to={SIGN_IN}>Back to sign-in</Link>
     </AuthLayout>
   );
 }

@@ -30,7 +30,7 @@ const unsavedWrite = (queryClient: QueryClient) =>
  * its unsaved edit stays on screen with `SignedOutNote`; while one is pending or refused,
  * read 401s (such as the refetch after the failed save) do not navigate either. Every other
  * mutation's 401 opens sign-in as before. Sign-in clears the cache. Provisional (GRE-1429
- * review). The two account screens handle their own answers.
+ * review). The public account screens handle their own answers.
  */
 function useSignInOnUnauthorized(router: AppRouter, queryClient: QueryClient) {
   useEffect(() => {

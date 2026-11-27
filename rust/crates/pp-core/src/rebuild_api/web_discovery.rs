@@ -127,7 +127,7 @@ fn brave_key(env: impl Fn(&str) -> Option<String>) -> Option<header::HeaderValue
 }
 
 fn public_url(raw: &str) -> Result<Url, Error> {
-    let mut url = Url::parse(raw).map_err(|_| Error::Destination)?;
+    let url = Url::parse(raw).map_err(|_| Error::Destination)?;
     if raw.len() > MAX_URL
         || !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
@@ -144,15 +144,17 @@ fn public_url(raw: &str) -> Result<Url, Error> {
     if !allowed {
         return Err(Error::Destination);
     }
-    url.set_fragment(None);
     Ok(url)
 }
 
 fn redirect_target(from: &Url, location: &header::HeaderValue) -> Result<Url, Error> {
     let location = location.to_str().map_err(|_| Error::Destination)?;
-    let target = from.join(location).map_err(|_| Error::Destination)?;
+    let mut target = from.join(location).map_err(|_| Error::Destination)?;
     if from.scheme() == "https" && target.scheme() != "https" {
         return Err(Error::Destination);
+    }
+    if target.fragment().is_none() {
+        target.set_fragment(from.fragment());
     }
     public_url(target.as_str())
 }
@@ -163,7 +165,9 @@ async fn follow_page<F: Future<Output = Result<Response, Error>>>(
 ) -> Result<(Url, Response), Error> {
     let mut url = public_url(raw)?;
     for hop in 0..=MAX_REDIRECTS {
-        let response = get(url.clone()).await?;
+        let mut request_url = url.clone();
+        request_url.set_fragment(None);
+        let response = get(request_url).await?;
         if !response.status().is_redirection() {
             return Ok((url, success(response)?));
         }

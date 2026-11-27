@@ -117,12 +117,33 @@ async fn fake_redirects_are_checked_before_the_next_request() {
     assert_eq!(result.err(), Some(Error::Destination));
 }
 
+#[tokio::test]
+async fn published_page_url_keeps_the_redirect_anchor_without_sending_it() {
+    let (url, _) = follow_page("https://docs.example.com/start#original", |url| {
+        assert!(url.fragment().is_none());
+        let response = http::Response::builder();
+        let response = match url.path() {
+            "/start" => response.status(302).header(header::LOCATION, "/manual"),
+            "/manual" => response
+                .status(302)
+                .header(header::LOCATION, "/guide#steps"),
+            "/guide" => response.status(302).header(header::LOCATION, "/final"),
+            "/final" => response.status(200),
+            _ => panic!("unexpected outbound hop"),
+        };
+        std::future::ready(Ok(response.body("").unwrap().into()))
+    })
+    .await
+    .unwrap();
+    assert_eq!(url.as_str(), "https://docs.example.com/final#steps");
+}
+
 #[test]
 fn bounds_and_attributes_remote_text() {
     let hits = search_hits(
         &serde_json::to_vec(&serde_json::json!({
             "web": {"results": (0..MAX_HITS + 3).map(|n| serde_json::json!({
-                "url": format!("https://docs.example.com/{n}"),
+                "url": format!("https://docs.example.com/{n}#section"),
                 "title": "é".repeat(400),
                 "description": "snippet"
             })).collect::<Vec<_>>()}
@@ -131,7 +152,7 @@ fn bounds_and_attributes_remote_text() {
     )
     .unwrap();
     assert_eq!(hits.len(), MAX_HITS);
-    assert_eq!(hits[0].url, "https://docs.example.com/0");
+    assert_eq!(hits[0].url, "https://docs.example.com/0#section");
     assert_eq!(hits[0].title.len(), 300);
     assert_eq!(hits[0].snippet, "snippet");
     assert_eq!(search_hits(b"<html>").err(), Some(Error::Unavailable));

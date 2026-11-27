@@ -359,6 +359,42 @@ fn snapshot_headers(server: &ReadServer) -> i64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_plan_checkoff_refuses_a_proposal_from_the_previous_accepted_revision() {
+    let server = proposed_header().await;
+    std::fs::create_dir_all(server.directory.join("repos/1/revisions/fixture")).unwrap();
+    let mcp = Mcp::start(&server).await;
+    let (failed, before) = mcp.call("get_plan_checkoff", json!({"plan_id":1})).await;
+    assert!(!failed, "{before}");
+    let args = json!({
+        "plan_id":1,
+        "rows":[{"part_id":before["parts"][0]["part_id"],"printed_count":0}],
+        "expected":before["accepted_basis"],
+    });
+    let (failed, checkoff) = mcp.call("propose_set_plan_progress", args.clone()).await;
+    assert!(!failed, "{checkoff}");
+    let (failed, accept) = mcp.propose().await;
+    assert!(!failed, "{accept}");
+    let (failed, receipt) = mcp.confirm(accept["action"]["id"].as_str().unwrap()).await;
+    assert!(!failed, "{receipt}");
+
+    let (failed, after) = mcp.call("get_plan_checkoff", json!({"plan_id":1})).await;
+    assert!(!failed, "{after}");
+    assert_ne!(before["accepted_basis"], after["accepted_basis"]);
+    let (failed, refusal) = mcp.call("propose_set_plan_progress", args).await;
+    assert!(failed, "{refusal}");
+    let (failed, refusal) = mcp
+        .confirm(checkoff["action"]["id"].as_str().unwrap())
+        .await;
+    assert!(failed, "{refusal}");
+    assert_eq!(refusal["status"], 409);
+    let (failed, unchanged) = mcp.call("get_plan_checkoff", json!({"plan_id":1})).await;
+    assert!(!failed, "{unchanged}");
+    assert_eq!(unchanged, after);
+    drop(mcp);
+    server.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_plan_history_reads_the_previous_revision_after_accept() {
     let server = proposed_header().await;
     std::fs::create_dir_all(server.directory.join("repos/1/revisions/fixture")).unwrap();

@@ -27,6 +27,7 @@ fn js_trim(s: &str) -> &str {
 /// Product tools on storage; every other tool still has no Rust port.
 pub(super) struct CheckoffDomain {
     progress: ProgressClient,
+    pub(super) accepted: pp_storage::read_model::ReadClient,
     pub(super) wait: Duration,
     pub(super) builds: pp_storage::build_graph::BuildGraphClient,
     pub(super) drafts: pp_storage::working_drafts::WorkingDraftClient,
@@ -37,6 +38,7 @@ pub(super) struct CheckoffDomain {
 impl CheckoffDomain {
     pub(super) fn new(
         progress: ProgressClient,
+        accepted: pp_storage::read_model::ReadClient,
         builds: pp_storage::build_graph::BuildGraphClient,
         drafts: pp_storage::working_drafts::WorkingDraftClient,
         farm: super::McpFarm,
@@ -45,6 +47,7 @@ impl CheckoffDomain {
     ) -> Self {
         Self {
             progress,
+            accepted,
             builds,
             drafts,
             farm,
@@ -59,7 +62,7 @@ impl CheckoffDomain {
             .ok_or_else(|| "MCP request has no resolved API key".into())
     }
 
-    fn run(&self, request: Request) -> Result<Response, String> {
+    pub(super) fn run(&self, request: Request) -> Result<Response, String> {
         let caller = self.caller()?;
         self.progress
             .apply(
@@ -134,6 +137,9 @@ impl DomainPort for CheckoffDomain {
         if name == VERIFY {
             return self.propose(args);
         }
+        if super::plan_checkoff::TOOLS.contains(&name) {
+            return self.plan_checkoff(name, args);
+        }
         if name == super::draft_parts::PROPOSE {
             return self.draft_parts_propose(args);
         }
@@ -162,6 +168,9 @@ impl DomainPort for CheckoffDomain {
     }
 
     fn apply_action(&self, action: &ProposedAction) -> Result<Value, String> {
+        if super::plan_checkoff::is_proposal(&action.action_type) {
+            return self.apply_plan_checkoff(action);
+        }
         if super::planning::TOOLS.contains(&action.action_type.as_str()) {
             return self.planning_apply(action);
         }

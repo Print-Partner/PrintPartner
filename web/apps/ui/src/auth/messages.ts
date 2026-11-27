@@ -20,6 +20,10 @@ export class OwnerExists extends Error {
 }
 export const MISMATCH = "The two passwords don't match.";
 export const BUSY = "Print Partner is busy or stopping. Try again in a moment.";
+export const RESET_REQUESTED =
+  "If an account exists for that email, you'll receive a reset link.";
+export const RESET_INVALID = "This reset link is invalid or expired. Request a new one.";
+export const PASSWORD_TOO_SHORT = "Use at least 8 characters for your new password.";
 
 /** No answer at all, or a proxy that says the core behind it is gone. */
 function unreachable(error: unknown): boolean {
@@ -52,6 +56,21 @@ export function setupProblem(error: unknown): string {
   // The core's own reason, such as a password that is too short.
   if (error instanceof CoreError && error.status === 400 && error.detail) return error.detail;
   return "Print Partner could not create the account. Try again.";
+}
+
+export function recoveryProblem(error: unknown, redeeming: boolean): string {
+  if (error instanceof CoreError) {
+    if (error.code === "reset_link_invalid") return RESET_INVALID;
+    if (error.status === 401) return LINK_ENDED;
+    if (error.status === 403) return REFUSED;
+    if (error.status === 429) return TOO_MANY;
+    if (error.status === 503 && error.code !== "outcome_unknown") return BUSY;
+  }
+  if (redeeming) {
+    return "Print Partner couldn't confirm the password change. Try signing in with your new password before requesting another link.";
+  }
+  if (unreachable(error)) return UNREACHABLE;
+  return "Print Partner could not request a reset link. Try again.";
 }
 
 /** What either screen says when it cannot read whether setup is needed. */

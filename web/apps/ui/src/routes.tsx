@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, type RouteObject } from "react-router";
-import { LoginScreen, SetupScreen } from "./auth/AuthScreens";
+import { ForgotPasswordScreen, LoginScreen, ResetPasswordScreen, SetupScreen } from "./auth/AuthScreens";
+import { FORGOT_PASSWORD, RESET_PASSWORD, SETUP, SIGN_IN } from "./auth/next";
 import { BuildCheckoff } from "./builds/BuildCheckoff";
 import { BuildHistory } from "./builds/BuildHistory";
 import { BuildPlan } from "./builds/BuildPlan";
@@ -53,8 +54,10 @@ const BUILD_TAB_SCREENS: Record<BuildTabPath, ReactNode> = {
 
 export const routes: RouteObject[] = [
   // Outside the frame: nothing on these screens needs a session.
-  { path: "/login", element: <LoginScreen /> },
-  { path: "/setup", element: <SetupScreen /> },
+  { path: SIGN_IN, element: <LoginScreen /> },
+  { path: SETUP, element: <SetupScreen /> },
+  { path: FORGOT_PASSWORD, element: <ForgotPasswordScreen /> },
+  { path: RESET_PASSWORD, element: <ResetPasswordScreen /> },
   {
     path: "/",
     element: (

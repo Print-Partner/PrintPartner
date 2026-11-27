@@ -25,6 +25,9 @@ impl IntoResponse for Failure {
                 coded(self.0, self.1, "current_password_rejected")
             }
             (StatusCode::SERVICE_UNAVAILABLE, BUSY) => typed(ProblemType::Overloaded, self.0, BUSY),
+            (StatusCode::BAD_REQUEST, "Invalid or expired reset link") => {
+                coded(self.0, self.1, "reset_link_invalid")
+            }
             (_, OUTCOME_UNKNOWN) => coded(self.0, self.1, "outcome_unknown"),
             _ => response(self.0, self.1),
         }
@@ -135,6 +138,39 @@ pub(crate) struct SignedOut {
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub(crate) struct AuthStatus {
     pub setup_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "codegen", schemars(with = "Omittable<bool>"))]
+    pub recovery_email_available: Option<bool>,
+}
+
+/// Public response: never describes an account or returns a reset URL.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct ResetRequested {
+    pub ok: bool,
+    pub message: &'static str,
+}
+
+impl ResetRequested {
+    pub(super) const GENERIC: Self = Self {
+        ok: true,
+        message: "If an account exists for that email, a reset link was sent.",
+    };
+}
+
+#[cfg(feature = "codegen")]
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RequestPasswordReset {
+    pub email: String,
+}
+
+#[cfg(feature = "codegen")]
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RedeemPasswordReset {
+    pub token: String,
+    pub password: String,
 }
 
 /// `POST /auth/login` body, as the handler reads it. Only the client contract

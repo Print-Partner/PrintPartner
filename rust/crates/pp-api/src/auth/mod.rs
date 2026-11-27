@@ -9,7 +9,8 @@ pub use mail::{Delivery, ResetMailer, SmtpConfig, SmtpSecurity};
 pub use provider::{OAuthCredentials, ProviderClient};
 #[cfg(feature = "codegen")]
 pub(crate) use wire::{
-    AuthStatus, CurrentUser, Health, RegisterRequest, SignInRequest, SignedIn, SignedOut,
+    AuthStatus, CurrentUser, Health, RedeemPasswordReset, RegisterRequest, RequestPasswordReset,
+    ResetRequested, SignInRequest, SignedIn, SignedOut,
 };
 #[cfg(all(test, feature = "desktop_rebuild"))]
 pub(crate) use {provider::network, wire::Failure};

@@ -88,10 +88,10 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
   `writeCore` checks the body against the generated request schema before it
   sends, and the answer against the response schema.
 
-## Sign-in and setup
+## Sign-in, setup and recovery
 
 `/login` and `/setup` render outside the frame (`src/auth/`). Both read
-`GET /auth/status` first, which says only whether the owner account exists yet.
+`GET /auth/status` first, which reports first-run state and whether this installation can send reset email.
 
 - **First run.** The bootstrap link (`pp-server bootstrap-url`, or the desktop
   app) opens the UI. With no account, the setup screen takes an email and the
@@ -100,6 +100,11 @@ policy; see [Content security policy](../../../docs/network-sharing.md#content-s
   in `next`. `next` is used only when it is a same-origin path to a screen this UI
   routes (`src/auth/next.ts`); `//host`, full URLs and unknown paths open Today.
   The email is never filled in from the core.
+- **Password recovery.** The request screen sends an email address to the Rust
+  auth routes only when reset mail is configured. It shows the same confirmation
+  for every address and never displays a reset link from the response. Opening a
+  reset link replaces the URL to remove the token. A successful reset uses the
+  new session and opens Today; an invalid or expired link offers a fresh request.
 - **Signed out.** A 401 opens `/login?next=<this page>` (`App.tsx`), from a read
   or a write. Writes that hold an edit only on screen opt out with
   `meta: KEEP_EDITS` (the Plan's header save and autosave): their 401 never

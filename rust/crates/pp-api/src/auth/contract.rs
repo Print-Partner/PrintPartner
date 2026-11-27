@@ -3,7 +3,8 @@
 //! whether the contract's request type accepts the body.
 
 use super::wire::{
-    AuthStatus, CurrentUser, PublicUser, RegisterRequest, SignInRequest, SignedIn, SignedOut,
+    AuthStatus, CurrentUser, PublicUser, RedeemPasswordReset, RegisterRequest,
+    RequestPasswordReset, ResetRequested, SignInRequest, SignedIn, SignedOut,
 };
 use crate::client_contract::codegen::{request, served};
 use pp_storage::auth::Provider;
@@ -28,6 +29,7 @@ pub(crate) fn fixtures() -> Result<Vec<Value>, serde_json::Error> {
             "first-run",
             AuthStatus {
                 setup_required: true,
+                recovery_email_available: None,
             },
         )?,
         served(
@@ -35,6 +37,15 @@ pub(crate) fn fixtures() -> Result<Vec<Value>, serde_json::Error> {
             "owner-exists",
             AuthStatus {
                 setup_required: false,
+                recovery_email_available: None,
+            },
+        )?,
+        served(
+            "AuthStatus",
+            "mail-configured",
+            AuthStatus {
+                setup_required: false,
+                recovery_email_available: Some(true),
             },
         )?,
         served(
@@ -54,7 +65,31 @@ pub(crate) fn fixtures() -> Result<Vec<Value>, serde_json::Error> {
         )?,
         served("SignedIn", "no-email", SignedIn { user: owner(None) })?,
         served("SignedOut", "ok", SignedOut { ok: true })?,
+        served("ResetRequested", "generic", ResetRequested::GENERIC)?,
     ];
+    for (name, value) in [
+        ("email", json!({"email":"owner@example.test"})),
+        ("missing-email", json!({})),
+    ] {
+        cases.push(request::<RequestPasswordReset>(
+            "RequestPasswordReset",
+            name,
+            value,
+        ));
+    }
+    for (name, value) in [
+        (
+            "redemption",
+            json!({"token":"synthetic", "password":"fixture-password"}),
+        ),
+        ("missing-token", json!({"password":"fixture-password"})),
+    ] {
+        cases.push(request::<RedeemPasswordReset>(
+            "RedeemPasswordReset",
+            name,
+            value,
+        ));
+    }
     for (name, value) in [
         (
             "filled",

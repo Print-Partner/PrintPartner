@@ -8,7 +8,10 @@ import {
   LINK_ENDED,
   MISMATCH,
   OWNER_EXISTS,
+  PASSWORD_TOO_SHORT,
   REFUSED,
+  RESET_INVALID,
+  RESET_REQUESTED,
   TOO_MANY,
   UNREACHABLE,
   WRONG,
@@ -79,6 +82,8 @@ describe("next", () => {
     "builds/3",
     "/login",
     "/setup",
+    "/forgot-password",
+    "/RESET-PASSWORD/?token=fixture",
     "/LOGIN",
     "/Setup",
     "/login/",
@@ -87,6 +92,99 @@ describe("next", () => {
     "/..//?x#y",
     "/nope/nothing",
   ])("ignores %s and opens Today", (raw) => expect(nextPath(raw, routes)).toBe("/today"));
+});
+
+describe("password recovery", () => {
+  const status = () => json({ setup_required: false, recovery_email_available: true });
+  const link = "/reset-password?token=fixture-token";
+
+  it.each(["owner@example.test", "absent@example.test"])(
+    "shows the same confirmation for %s and never displays a development link",
+    async (email) => {
+      const fetchMock = core({
+        "/auth/status": status,
+        "/auth/forgot-password": () => json({
+          ok: true,
+          message: "Server text is not displayed.",
+          ...(email.startsWith("owner") && { dev_reset_url: "/reset-password?token=never-display" }),
+        }),
+      });
+      renderAt(["/login"], fetchMock);
+      fireEvent.click(await screen.findByRole("link", { name: "Forgot password?" }));
+      await fill("Email", email);
+      fireEvent.click(screen.getByRole("button", { name: "Request reset link" }));
+      expect((await screen.findByRole("status")).textContent).toBe(RESET_REQUESTED);
+      expect(screen.queryByText(/never-display|Server text/)).toBeNull();
+      expect(screen.getAllByRole("link").map((item) => item.getAttribute("href"))).toEqual(["/login"]);
+      const [[, request]] = sent(fetchMock, "/auth/forgot-password");
+      expect(JSON.parse(String(request?.body))).toEqual({ email });
+    },
+  );
+
+  it("does not promise an email when the installation has no mail transport", async () => {
+    const fetchMock = core({ "/auth/status": () => json({ setup_required: false }) });
+    renderAt(["/forgot-password"], fetchMock);
+    await screen.findByText("Password reset email is not configured for this installation.");
+    expect(screen.queryByLabelText("Email")).toBeNull();
+    expect(sent(fetchMock, "/auth/forgot-password")).toHaveLength(0);
+  });
+
+  it("offers a new link when the credential is missing", async () => {
+    const fetchMock = core({ "/auth/status": status });
+    renderAt(["/reset-password"], fetchMock);
+    expect((await screen.findByRole("alert")).textContent).toBe(RESET_INVALID);
+    expect(screen.getByRole("link", { name: "Request a new reset link" }).getAttribute("href"))
+      .toBe("/forgot-password");
+    expect(sent(fetchMock, "/auth/reset-password")).toHaveLength(0);
+  });
+
+  it("removes the token from browser history before submitting and opens Today on success", async () => {
+    const fetchMock = core({
+      "/auth/status": status,
+      "/auth/reset-password": () => json({ ok: true, user }),
+      "/health": () => json({}),
+    });
+    const { path, router } = renderAt(["/login", link], fetchMock);
+    await fill("New password", "new-password");
+    await fill("New password again", "new-password");
+    expect(path()).toBe("/reset-password");
+    expect(router.state.location.state).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+    await waitFor(() => expect(path()).toBe("/today"));
+    const [[, request]] = sent(fetchMock, "/auth/reset-password");
+    expect(JSON.parse(String(request?.body))).toEqual({ token: "fixture-token", password: "new-password" });
+    expect(request?.redirect).toBe("error");
+    await act(async () => { await router.navigate(-1); });
+    expect(path()).toBe("/login");
+  });
+
+  it("treats a rejected token as invalid or expired and stops submitting it", async () => {
+    const fetchMock = core({
+      "/auth/status": status,
+      "/auth/reset-password": () => json({ code: "reset_link_invalid" }, 400),
+    });
+    renderAt([link], fetchMock);
+    await fill("New password", "new-password");
+    await fill("New password again", "new-password");
+    fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(RESET_INVALID);
+    expect(screen.queryByRole("button", { name: "Reset password" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Request a new reset link" }).getAttribute("href"))
+      .toBe("/forgot-password");
+  });
+
+  it.each([
+    ["short", "short", PASSWORD_TOO_SHORT],
+    ["new-password", "other-password", MISMATCH],
+  ])("does not send a locally rejected password", async (password, confirm, message) => {
+    const fetchMock = core({ "/auth/status": status });
+    renderAt([link], fetchMock);
+    await fill("New password", password);
+    await fill("New password again", confirm);
+    fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+    expect(sent(fetchMock, "/auth/reset-password")).toHaveLength(0);
+  });
 });
 
 describe("first run", () => {

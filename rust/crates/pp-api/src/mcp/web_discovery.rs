@@ -33,7 +33,7 @@ pub struct Page {
     pub truncated: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Disabled,
     InvalidInput,

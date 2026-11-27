@@ -3558,7 +3558,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
- "mime",
  "pp-api",
  "pp-compat",
  "pp-gateway",

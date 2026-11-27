@@ -1,5 +1,4 @@
 use dom_query::Document;
-use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE, WINDOWS_1252, X_USER_DEFINED};
 use pp_api::mcp::web_discovery::{Discovery, Error, Hit, Page, Read};
 use pp_net::{
     network::{CheckedDns, Policy, checked_client},
@@ -7,8 +6,11 @@ use pp_net::{
 };
 use reqwest::{Client, Response, Url, header};
 use serde::Deserialize;
-use std::{borrow::Cow, future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
+
+mod page_content;
+use page_content::PageContent;
 
 const SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 const MAX_BODY: usize = 512 * 1024;
@@ -63,9 +65,9 @@ impl WebDiscovery {
                 .map_err(network_error)
         })
         .await?;
-        let mime = page_type(&response)?;
+        let content = PageContent::from_header(response.headers().get(header::CONTENT_TYPE))?;
         let bytes = body(response).await?;
-        page_text(url.into(), &bytes, &mime)
+        page_text(url.into(), &bytes, content)
     }
 
     fn brave_request(
@@ -216,77 +218,13 @@ async fn body(mut response: Response) -> Result<Vec<u8>, Error> {
     Ok(body)
 }
 
-fn page_type(response: &Response) -> Result<mime::Mime, Error> {
-    let mime: mime::Mime = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse().ok())
-        .ok_or(Error::ContentType)?;
-    if matches!(
-        mime.essence_str(),
-        "text/html" | "application/xhtml+xml" | "text/plain"
-    ) {
-        Ok(mime)
-    } else {
-        Err(Error::ContentType)
-    }
-}
-
-fn html_encoding(body: &[u8]) -> Option<&'static Encoding> {
-    let prefix = String::from_utf8_lossy(&body[..body.len().min(1024)]);
-    let document = Document::from(prefix.as_ref());
-    document
-        .select("head meta")
-        .nodes()
-        .iter()
-        .find_map(|node| {
-            let encoding = if let Some(label) = node.attr("charset") {
-                Encoding::for_label_no_replacement(label.as_bytes())
-            } else if node
-                .attr("http-equiv")?
-                .eq_ignore_ascii_case("content-type")
-            {
-                let content: mime::Mime = node.attr("content")?.parse().ok()?;
-                Encoding::for_label_no_replacement(
-                    content.get_param(mime::CHARSET)?.as_str().as_bytes(),
-                )
-            } else {
-                None
-            }?;
-            Some(match encoding {
-                e if e == UTF_16BE || e == UTF_16LE => UTF_8,
-                e if e == X_USER_DEFINED => WINDOWS_1252,
-                e => e,
-            })
-        })
-}
-
-fn decode_page<'a>(body: &'a [u8], mime: &mime::Mime) -> Result<Cow<'a, str>, Error> {
-    let (encoding, skip) = if let Some(bom) = Encoding::for_bom(body) {
-        bom
-    } else if let Some(label) = mime.get_param(mime::CHARSET) {
-        (
-            Encoding::for_label_no_replacement(label.as_str().as_bytes()).ok_or(Error::Encoding)?,
-            0,
-        )
-    } else if mime.essence_str() == "text/html" {
-        (html_encoding(body).unwrap_or(UTF_8), 0)
-    } else {
-        (UTF_8, 0)
-    };
-    encoding
-        .decode_without_bom_handling_and_without_replacement(&body[skip..])
-        .ok_or(Error::Encoding)
-}
-
 fn cap(text: &str, bytes: usize) -> (&str, bool) {
     (&text[..text.floor_char_boundary(bytes)], text.len() > bytes)
 }
 
-fn page_text(url: String, body: &[u8], mime: &mime::Mime) -> Result<Page, Error> {
-    let raw = decode_page(body, mime)?;
-    let (title, text) = if mime.essence_str() != "text/plain" {
+fn page_text(url: String, body: &[u8], content: PageContent) -> Result<Page, Error> {
+    let raw = content.decode(body)?;
+    let (title, text) = if content.is_markup() {
         let document = Document::from(raw.as_ref());
         let title = document.select_single("title").text();
         document

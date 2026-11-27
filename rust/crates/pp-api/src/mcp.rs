@@ -172,6 +172,7 @@ struct Reads {
 
 /// The storage clients MCP tools read and write, each used with the
 /// request's API key.
+#[derive(Clone)]
 pub struct McpClients {
     pub builds: BuildGraphClient,
     pub workflow: WorkflowClient,
@@ -180,6 +181,23 @@ pub struct McpClients {
     pub progress: ProgressClient,
     pub accepted: ReadClient,
     pub farm: McpFarm,
+}
+
+impl McpClients {
+    fn reads(self, wait: Duration) -> Reads {
+        Reads {
+            builds: self.builds,
+            workflow: self.workflow,
+            drafts: self.drafts,
+            planning: self.planning,
+            progress: self.progress,
+            accepted: self.accepted,
+            farm: self.farm,
+            wait,
+            #[cfg(test)]
+            confirm_gate: None,
+        }
+    }
 }
 
 /// What `get_farm_status` and the farm tools' Module gate read: the farm
@@ -219,26 +237,10 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
             .with_allowed_hosts([config.host.clone()])
             .with_allowed_origins([config.origin.clone()])
     };
-    let McpClients {
-        builds,
-        workflow,
-        drafts,
-        planning,
-        progress,
-        accepted,
-        farm,
-    } = clients;
     let reads = Reads {
-        builds,
-        workflow,
-        drafts,
-        planning,
-        progress,
-        accepted,
-        farm,
-        wait: config.wait,
         #[cfg(test)]
         confirm_gate: config.confirm_gate.clone(),
+        ..clients.reads(config.wait)
     };
     let rule = rate_limit::Rule::new(config.limit, config.window);
     #[cfg(test)]
@@ -351,25 +353,29 @@ pub(crate) fn test_router_watching(
         )
         .unwrap();
     let accepted = owner.accepted_reads_with_policy(policy).unwrap();
-    let router = mcp_router(
-        config,
-        auth.clone(),
-        McpClients {
-            builds,
-            workflow,
-            drafts,
-            planning,
-            progress,
-            accepted,
-            farm: McpFarm {
-                reads: owner.farm_reads(policy).unwrap(),
-                observations,
-                modules: owner.client(),
-                activity: owner.print_activity(policy).unwrap(),
-                inventory,
-            },
+    let http = crate::accepted::AcceptedHttpConfig::from_startup(
+        &config.origin,
+        &config.api_key_tenant,
+        config.enabled.then_some("1"),
+    )
+    .unwrap();
+    let clients = McpClients {
+        builds,
+        workflow,
+        drafts,
+        planning,
+        progress,
+        accepted,
+        farm: McpFarm {
+            reads: owner.farm_reads(policy).unwrap(),
+            observations,
+            modules: owner.client(),
+            activity: owner.print_activity(policy).unwrap(),
+            inventory,
         },
-    );
+    };
+    let router =
+        proposal_router(http, clients.clone()).merge(mcp_router(config, auth.clone(), clients));
     (router, auth)
 }
 
@@ -697,6 +703,9 @@ mod farm_status;
 mod import_inputs;
 #[path = "mcp/pending_actions.rs"]
 mod pending_actions;
+pub use pending_actions::http::proposal_router;
+#[cfg(feature = "codegen")]
+pub(crate) use pending_actions::http::{Proposal, ProposalDecision, ProposalList};
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
 #[path = "mcp/planning.rs"]

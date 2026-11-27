@@ -164,6 +164,43 @@ body {
   color: var(--interaction-on-accent);
 }
 
+a.pp-header-button {
+  text-decoration: none;
+}
+
+.pp-proposals {
+  display: grid;
+  gap: 16px;
+  list-style: none;
+  padding: 0;
+}
+
+.pp-proposal {
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 16px;
+}
+
+.pp-proposal h2 {
+  margin-top: 0;
+}
+
+.pp-proposal-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+}
+
+.pp-proposal-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pp-proposal pre {
+  overflow: auto;
+  max-height: 20rem;
+}
+
 /* docs/product/ui-tokens.md: an accent-filled control opts out of the forced-colors
    backplate, so its HighlightText label stays on its Highlight fill. */
 @media (forced-colors: active) {

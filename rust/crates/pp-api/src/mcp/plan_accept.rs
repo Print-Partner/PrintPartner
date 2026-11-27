@@ -21,7 +21,8 @@ use pp_storage::required_units::{Outcome as WorkspaceOutcome, ReconciliationComm
 use pp_storage::working_drafts::{Outcome as DraftOutcome, Request as DraftRequest};
 
 pub(super) const PROPOSE: &str = "propose_apply_plan_draft";
-const SUMMARY: &str = "Apply the confirmed Build planning change.";
+pub(super) const REVIEWED: &str = "apply_reviewed_plan_draft";
+const SUMMARY: &str = "Publish the reviewed Draft as the Accepted Plan.";
 const NOT_FOUND: &str = "Selected Working Plan not found";
 
 /// Test hook: a confirm signals `entered` once it has taken its proposal,
@@ -62,11 +63,17 @@ impl ConfirmGate {
 enum Previewed {
     /// Accept would run: the preview's revision without `draft_id`, and the
     /// preview.
-    Ready { revision: Value, preview: Value },
+    Ready {
+        revision: Value,
+        preview: Value,
+    },
     /// The draft has no Required-unit selection, and none was made.
-    Unprepared { reason: Value },
+    Unprepared {
+        reason: Value,
+    },
     /// A refusal: its message and the fields that explain it.
     Refused(String, Value),
+    Auth(pp_storage::WriterFailure),
 }
 
 impl ProductMcp {
@@ -85,31 +92,10 @@ impl ProductMcp {
         ) else {
             return ToolResult::error(json!({ "error": "plan_id and draft_id required" }));
         };
-        match self.guard(plan, draft, &presented).await {
-            Ok(()) => {}
-            Err(Refusal::NoBrief) => {
-                return ToolResult::error(json!({ "error": "Build planning brief not found" }));
-            }
-            Err(refusal) => return ToolResult::error(json!({ "error": refusal.detail() })),
-        }
-        let (revision, read) = match self.preview(plan, draft, presented.clone(), false).await {
-            Previewed::Ready { revision, preview } => (revision, json!({ "preview": preview })),
-            Previewed::Unprepared { reason } => (
-                Value::Null,
-                json!({ "reconciliation": { "kind": "reconciliation_required", "reason": reason } }),
-            ),
-            Previewed::Refused(message, mut fields) => {
-                fields["error"] = json!(message);
-                return ToolResult::error(fields);
-            }
+        let (action, read) = match self.plan_proposal(plan, draft, &presented, None).await {
+            Ok(proposal) => proposal,
+            Err(error) => return ToolResult::error(error.mcp_body()),
         };
-        let params =
-            json!({ "plan_id": plan.get(), "draft_id": draft.get(), "revision": revision });
-        let (Value::Object(params), Ok(plan_id)) = (params, i64::try_from(plan.get())) else {
-            return ToolResult::error(json!({ "error": "plan_id required" }));
-        };
-        let action =
-            ProposedAction::new(PROPOSE, plan_id, "apply plan draft".into(), SUMMARY, params);
         let mut content: Value =
             serde_json::from_str(&action.proposed_content()).unwrap_or_default();
         if let (Some(content), Value::Object(read)) = (content.as_object_mut(), read) {
@@ -122,6 +108,51 @@ impl ProductMcp {
             ToolResult::ok(content.to_string()),
         )
         .await
+    }
+
+    pub(super) async fn plan_proposal(
+        &self,
+        plan: PositiveId,
+        draft: PositiveId,
+        presented: &PresentedCredential,
+        reviewed: Option<ApplyRequest>,
+    ) -> Result<(ProposedAction, Value), StageRefusal> {
+        let kind = if reviewed.is_some() {
+            REVIEWED
+        } else {
+            self.guard(plan, draft, presented)
+                .await
+                .map_err(StageRefusal::Guard)?;
+            PROPOSE
+        };
+        let (revision, read) = match self.preview(plan, draft, presented.clone(), false).await {
+            Previewed::Ready { revision, preview } => (revision, json!({ "preview": preview })),
+            Previewed::Unprepared { .. } if reviewed.is_some() => {
+                return Err(StageRefusal::Changed);
+            }
+            Previewed::Unprepared { reason } => (
+                Value::Null,
+                json!({ "reconciliation": { "kind": "reconciliation_required", "reason": reason } }),
+            ),
+            Previewed::Refused(message, fields) => {
+                return Err(StageRefusal::Preview(message, fields));
+            }
+            Previewed::Auth(error) => return Err(StageRefusal::Guard(Refusal::Auth(error))),
+        };
+        if let Some(reviewed) = reviewed {
+            let current = serde_json::from_value::<ApplyRequest>(revision.clone())
+                .map_err(|_| StageRefusal::Changed)?;
+            if json!(current) != json!(reviewed) {
+                return Err(StageRefusal::Changed);
+            }
+        }
+        let params =
+            json!({ "plan_id": plan.get(), "draft_id": draft.get(), "revision": revision });
+        let (Value::Object(params), Ok(plan_id)) = (params, i64::try_from(plan.get())) else {
+            return Err(StageRefusal::Guard(Refusal::MissingBuild));
+        };
+        let action = ProposedAction::new(kind, plan_id, "apply plan draft".into(), SUMMARY, params);
+        Ok((action, read))
     }
 
     /// Accepts the revision `action` proposed, or, for a draft proposed
@@ -150,20 +181,26 @@ impl ProductMcp {
         ) else {
             return refuse(NOT_FOUND, Value::Null, false);
         };
-        if let Err(refusal) = self.guard(plan, draft, &presented).await {
+        // The browser reviewed this numbered Draft. An assistant proposing
+        // on its own must still prove the planning brief selected it.
+        if action.action_type == PROPOSE
+            && let Err(refusal) = self.guard(plan, draft, &presented).await
+        {
             return refuse(&refusal.detail(), Value::Null, false);
         }
         // Selecting an automatic reconciliation can write even if Accept
         // later refuses. In that case, a retry needs a fresh proposal.
-        let preparing = params["revision"].is_null();
+        let preparing = action.action_type == PROPOSE && params["revision"].is_null();
         let revision = match params["revision"].clone() {
-            Value::Null => match self.preview(plan, draft, presented.clone(), true).await {
-                Previewed::Ready { revision, .. } => revision,
-                Previewed::Refused(message, fields) => return refuse(&message, fields, true),
-                Previewed::Unprepared { .. } => {
-                    return refuse("Working Plan preview is unavailable", Value::Null, true);
+            Value::Null if preparing => {
+                match self.preview(plan, draft, presented.clone(), true).await {
+                    Previewed::Ready { revision, .. } => revision,
+                    Previewed::Refused(message, fields) => return refuse(&message, fields, true),
+                    Previewed::Unprepared { .. } | Previewed::Auth(_) => {
+                        return refuse("Working Plan preview is unavailable", Value::Null, true);
+                    }
                 }
-            },
+            }
             revision => revision,
         };
         let Ok(request) = serde_json::from_value::<ApplyRequest>(revision) else {
@@ -289,6 +326,13 @@ impl ProductMcp {
         .await;
         match read {
             Ok(Ok(previewed)) => previewed,
+            Ok(Err(error))
+                if error
+                    .downcast_ref::<pp_storage::auth::AuthFailure>()
+                    .is_some() =>
+            {
+                Previewed::Auth(pp_storage::WriterFailure::from(error))
+            }
             _ => unavailable(),
         }
     }
@@ -324,22 +368,50 @@ impl ProductMcp {
                 Err(Refusal::NotSelected)
             }
             Ok(Ok(planning::Outcome::MissingBuild)) => Err(Refusal::MissingBuild),
+            Ok(Err(error))
+                if error
+                    .downcast_ref::<pp_storage::auth::AuthFailure>()
+                    .is_some() =>
+            {
+                Err(Refusal::Auth(pp_storage::WriterFailure::from(error)))
+            }
             _ => Err(Refusal::Unavailable),
         }
     }
 }
 
-enum Refusal {
+pub(super) enum StageRefusal {
+    Guard(Refusal),
+    Preview(String, Value),
+    Changed,
+}
+
+impl StageRefusal {
+    fn mcp_body(self) -> Value {
+        match self {
+            Self::Guard(Refusal::NoBrief) => json!({ "error": "Build planning brief not found" }),
+            Self::Guard(error) => json!({ "error": error.detail() }),
+            Self::Preview(message, mut fields) => {
+                fields["error"] = json!(message);
+                fields
+            }
+            Self::Changed => json!({ "error": "Working Plan changed after preview" }),
+        }
+    }
+}
+
+pub(super) enum Refusal {
     NoBrief,
     NotSelected,
     SourceChoices(Vec<String>),
     MissingBuild,
+    Auth(pp_storage::WriterFailure),
     Unavailable,
 }
 
 impl Refusal {
     /// Node's `confirm_apply` detail; a missing brief is a missing selection.
-    fn detail(&self) -> String {
+    pub(super) fn detail(&self) -> String {
         match self {
             Self::NoBrief | Self::NotSelected => NOT_FOUND.into(),
             Self::SourceChoices(blockers) => format!(
@@ -347,6 +419,7 @@ impl Refusal {
                 blockers.join("; ")
             ),
             Self::MissingBuild => "Build not found".into(),
+            Self::Auth(_) => "Authentication required".into(),
             Self::Unavailable => "Working Plan preview is unavailable".into(),
         }
     }

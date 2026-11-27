@@ -125,6 +125,40 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "DraftAcceptPreview",
     ),
     route(
+        "listProposals",
+        "GET",
+        "/api/v2/proposals",
+        None,
+        "ProposalList",
+    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "applyProposal",
+            "POST",
+            "/api/v2/proposals/{id}/apply",
+            None,
+            "ProposalDecision",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "dismissProposal",
+            "POST",
+            "/api/v2/proposals/{id}/dismiss",
+            None,
+            "ProposalDecision",
+        )
+    },
+    route(
+        "stageDraftProposal",
+        "POST",
+        "/api/v2/plans/{id}/drafts/{draft_id}/propose",
+        Some("AcceptDraftRequest"),
+        "Proposal",
+    ),
+    route(
         "editDraftParts",
         "PATCH",
         "/api/v2/plans/{id}/drafts/{draft_id}/parts",
@@ -718,6 +752,15 @@ pub(crate) mod codegen {
         )?;
         schema("DraftAutosaved", schemars::schema_for!(DraftAutosaved))?;
         schema("AcceptDraftRequest", schemars::schema_for!(ApplyRequest))?;
+        schema("Proposal", schemars::schema_for!(crate::mcp::Proposal))?;
+        schema(
+            "ProposalList",
+            schemars::schema_for!(crate::mcp::ProposalList),
+        )?;
+        schema(
+            "ProposalDecision",
+            schemars::schema_for!(crate::mcp::ProposalDecision),
+        )?;
         // Node's receipt parser refuses unknown keys; as a response the
         // client strips them like every other answer.
         let mut receipt = schemars::schema_for!(ApplyPlanDraftReceipt);

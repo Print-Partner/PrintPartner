@@ -15,7 +15,7 @@ use pp_api::{
     history::history_router,
     integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
-    mcp::{McpClients, McpFarm, McpHttpConfig, mcp_router},
+    mcp::{McpClients, McpFarm, McpHttpConfig, mcp_router, proposal_router},
     modules::modules_router,
     planning::planning_router,
     plates::plates_router,
@@ -464,18 +464,20 @@ fn read_router_with_updates(
         policy,
         config.clone(),
     )?);
+    let proposal_clients = McpClients {
+        builds: builds_client,
+        workflow: workflow_client,
+        drafts: drafts_client,
+        planning: planning_client,
+        progress: checkoff_client,
+        accepted: accepted_client,
+        farm: mcp_farm(farm_clients, runtime.farm, settings)?,
+    };
+    let proposals = proposal_router(config.clone(), proposal_clients.clone());
     let mcp = mcp_router(
         mcp_config(origin, api_key_tenant, runtime.server)?,
         auth_client.clone(),
-        McpClients {
-            builds: builds_client,
-            workflow: workflow_client,
-            drafts: drafts_client,
-            planning: planning_client,
-            progress: checkoff_client,
-            accepted: accepted_client,
-            farm: mcp_farm(farm_clients, runtime.farm, settings)?,
-        },
+        proposal_clients,
     );
     Ok(Some(
         auth_router(auth.http, auth_client, auth.providers, auth.mail)
@@ -491,6 +493,7 @@ fn read_router_with_updates(
             .merge(events)
             .merge(checkoff)
             .merge(plates)
+            .merge(proposals)
             .merge(mcp),
     ))
 }

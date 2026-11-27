@@ -217,6 +217,65 @@ async fn proposed_header() -> ReadServer {
     header_draft(true).await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_draft_staged_with_the_ui_session_can_be_confirmed_over_mcp() {
+    let server = proposed_header().await;
+    server
+        .sql()
+        .execute(
+            "DELETE FROM app_settings WHERE tenant_id='default' AND key='build_planning.v1.1'",
+            [],
+        )
+        .unwrap();
+    let mcp = Mcp::start(&server).await;
+    let preview = server
+        .request(Method::GET, "/api/v2/plans/1/drafts/2/accept-preview")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let mut revision = preview["revision"].clone();
+    revision.as_object_mut().unwrap().remove("draft_id");
+    let propose = |revision: Value| {
+        mcp.client
+            .post(format!("{}/api/v2/plans/1/drafts/2/propose", mcp.origin))
+            .header("Origin", &mcp.origin)
+            .header("Cookie", FIXTURE_COOKIE)
+            .json(&revision)
+    };
+    let mut stale = revision.clone();
+    stale["expected_header_version"] = json!(0);
+    let rejected = propose(stale).send().await.unwrap();
+    assert_eq!(rejected.status(), 409);
+    assert_eq!(
+        rejected.json::<Value>().await.unwrap()["code"],
+        "draft_changed"
+    );
+    let staged = propose(revision)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(staged["staged_by"], "UI");
+    assert_ne!(build_name(&server), "Renamed by MCP");
+    let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
+    assert_eq!(pending["actions"][0]["id"], staged["id"]);
+    let (failed, confirmed) = mcp.confirm(staged["id"].as_str().unwrap()).await;
+    assert!(!failed, "{confirmed}");
+    assert_eq!(build_name(&server), "Renamed by MCP");
+    assert_eq!(snapshot_headers(&server), 1);
+    drop(mcp);
+    server.close().await;
+}
+
 fn build_name(server: &ReadServer) -> String {
     server
         .sql()

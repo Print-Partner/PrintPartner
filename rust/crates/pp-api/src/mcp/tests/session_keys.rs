@@ -144,15 +144,109 @@ fn builds(server: &McpServer) -> i64 {
 
 /// Proposes a Build on the session in `headers` and returns the action id.
 async fn propose_build(server: &McpServer, headers: &[(String, String)]) -> String {
+    propose_named_build(server, headers, "Key-bound Build").await
+}
+
+async fn propose_named_build(
+    server: &McpServer,
+    headers: &[(String, String)],
+    name: &str,
+) -> String {
     let (proposal, error) = json_call(
         server,
         headers,
         "propose_create_build",
-        json!({ "name": "Key-bound Build", "request": "One Voron.", "urls": [] }),
+        json!({ "name": name, "request": "One Voron.", "urls": [] }),
     )
     .await;
     assert!(!error, "{proposal}");
     proposal["action"]["id"].as_str().unwrap().to_owned()
+}
+
+async fn ui(server: &McpServer, method: Method, suffix: &str) -> (u16, Value) {
+    let response = server
+        .client
+        .request(
+            method,
+            format!("{}/api/v2/proposals{suffix}", server.origin),
+        )
+        .header("Origin", &server.origin)
+        .header("Cookie", format!("pp_session={FIXTURE_SESSION}"))
+        .send()
+        .await
+        .unwrap();
+    (response.status().as_u16(), response.json().await.unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_and_ui_share_proposal_decisions_without_replays() {
+    let (server, headers) = orders_on().await;
+    let list_url = format!("{}/api/v2/proposals", server.origin);
+    assert_eq!(
+        server.client.get(&list_url).send().await.unwrap().status(),
+        401
+    );
+    assert_eq!(
+        server
+            .client
+            .get(&list_url)
+            .header("Cookie", "pp_session=bogus")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let action = propose_build(&server, &headers).await;
+    let (_, shown) = ui(&server, Method::GET, "").await;
+    assert_eq!(shown["actions"][0]["id"], action);
+    assert_eq!(shown["actions"][0]["staged_by"], "ticket-t-16");
+    let before = builds(&server);
+    let apply = format!("/{action}/apply");
+    assert_eq!(
+        ui(&server, Method::POST, &apply).await,
+        (200, json!("applied"))
+    );
+    assert_eq!(builds(&server), before + 1);
+    assert!(pending(&server, &headers).await.is_empty());
+    assert_eq!(
+        confirm(&server, &headers, &action).await.0["code"],
+        "already_applied"
+    );
+    assert_eq!(
+        ui(&server, Method::POST, &apply).await.1["code"],
+        "already_applied"
+    );
+    assert_eq!(builds(&server), before + 1);
+
+    let action = propose_named_build(&server, &headers, "Dismissable Build").await;
+    let dismiss = format!("/{action}/dismiss");
+    assert_eq!(
+        ui(&server, Method::POST, &dismiss).await,
+        (200, json!("dismissed"))
+    );
+    assert!(pending(&server, &headers).await.is_empty());
+    assert_eq!(
+        confirm(&server, &headers, &action).await.0["code"],
+        "already_dismissed"
+    );
+
+    let action = propose_named_build(&server, &headers, "Dismissable Build").await;
+    let (dismissed, error) = json_call(
+        &server,
+        &headers,
+        "dismiss_proposed_action",
+        json!({ "action_id": action }),
+    )
+    .await;
+    assert!(!error, "{dismissed}");
+    assert_eq!(ui(&server, Method::GET, "").await.1["actions"], json!([]));
+    assert_eq!(
+        ui(&server, Method::POST, &format!("/{action}/apply"))
+            .await
+            .1["code"],
+        "already_dismissed"
+    );
 }
 
 /// A second valid key of the same installation cannot reach the first key's
@@ -399,6 +493,9 @@ async fn mcp_pending_action_refuses_expiry_and_names_the_dependency_to_apply_fir
     assert!(error, "{blocked}");
     assert_eq!(blocked["code"], "dependency_blocked");
     assert_eq!(blocked["blocked_by"]["id"], first);
+    let (status, refusal) = ui(&server, Method::POST, &format!("/{dependent}/apply")).await;
+    assert_eq!(status, 409);
+    assert_eq!(refusal["blocked_by"]["id"], first);
     assert_eq!(builds(&server), before);
 
     let (confirmed, error) = confirm(&server, &headers, &first).await;
@@ -428,5 +525,15 @@ async fn mcp_pending_action_refuses_expiry_and_names_the_dependency_to_apply_fir
     assert!(error, "{refused}");
     assert_eq!(refused["code"], "expired");
     assert_eq!(refused["expires_at"], waiting[0]["expires_at"]);
+    assert_eq!(
+        ui(&server, Method::GET, "").await.1["actions"][0]["state"],
+        "expired"
+    );
+    assert_eq!(
+        ui(&server, Method::POST, &format!("/{expired}/apply"))
+            .await
+            .1["code"],
+        "expired"
+    );
     assert_eq!(builds(&server), before + 2);
 }

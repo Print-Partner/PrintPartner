@@ -19,21 +19,15 @@ use pp_storage::read_model::Credential;
 use serde::Deserialize;
 use std::sync::{Arc, atomic::Ordering};
 
-fn local_session(extensions: &Extensions) -> Result<Credential, Response> {
+fn local_session(extensions: &Extensions) -> Result<Credential, &'static str> {
     if extensions.get::<NetworkAdmission>().is_some() {
-        return Err(problem::response(
-            StatusCode::FORBIDDEN,
-            "Local desktop only",
-        ));
+        return Err("Local desktop only");
     }
     match extensions.get::<PresentedCredential>() {
         Some(presented @ PresentedCredential::Session(_)) => {
             Ok(presented.clone().into_credential())
         }
-        _ => Err(problem::response(
-            StatusCode::FORBIDDEN,
-            "Desktop session required",
-        )),
+        _ => Err("Desktop session required"),
     }
 }
 
@@ -44,7 +38,7 @@ pub(super) async fn picker(
 ) -> Response {
     let credential = match local_session(&extensions) {
         Ok(credential) => credential,
-        Err(response) => return response,
+        Err(detail) => return problem::response(StatusCode::FORBIDDEN, detail),
     };
     match app
         .gate
@@ -77,7 +71,7 @@ pub(super) async fn deliver(
 ) -> Response {
     let credential = match local_session(&extensions) {
         Ok(credential) => credential,
-        Err(response) => return response,
+        Err(detail) => return problem::response(StatusCode::FORBIDDEN, detail),
     };
     let safe_id = |id: &str| build_id(id).and_then(|id| i64::try_from(id.get()).ok());
     let Some(revision) = safe_id(&selection.plate_revision_id.to_string()) else {

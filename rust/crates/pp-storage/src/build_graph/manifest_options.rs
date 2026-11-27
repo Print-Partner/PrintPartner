@@ -90,6 +90,18 @@ pub(super) struct PreparedManifestCommand {
     kit: Option<KitManifest>,
 }
 impl BuildGraphClient {
+    fn observe_manifest_pair(
+        &self,
+        captured: &CapturedManifestGraph,
+        budget: &mut PreparationBudget<'_>,
+    ) -> Result<(ObservedBuilder, ObservedBuilder), ReadFailure> {
+        let reads = self.manifest_reads.as_deref();
+        Ok((
+            observation::observe(captured, reads, budget)?,
+            observation::observe(captured, reads, budget)?,
+        ))
+    }
+
     pub fn plan_option_groups(
         &self,
         credential: read_model::Credential,
@@ -109,14 +121,8 @@ impl BuildGraphClient {
             let Some(captured) = read()? else {
                 return Ok(ManifestOptionsOutcome::MissingBuild);
             };
-            let result = (|| {
-                let mut budget = PreparationBudget::new(cancelled, self.manifest_limits)?;
-                let first =
-                    observation::observe(&captured, self.manifest_reads.as_deref(), &mut budget)?;
-                let second =
-                    observation::observe(&captured, self.manifest_reads.as_deref(), &mut budget)?;
-                Ok::<_, ReadFailure>((first, second))
-            })();
+            let result = PreparationBudget::new(cancelled, self.manifest_limits)
+                .and_then(|mut budget| self.observe_manifest_pair(&captured, &mut budget));
             let (first, second) = match result {
                 Ok(pair) => pair,
                 Err(ReadFailure::Cancelled) => return Err(crate::WriterFailure::Cancelled),
@@ -187,14 +193,7 @@ impl BuildGraphClient {
                 _ => None,
             };
             let mut budget = PreparationBudget::new(&cancelled, self.manifest_limits)?;
-            let mut observe = || -> std::result::Result<_, ReadFailure> {
-                let first =
-                    observation::observe(&captured, self.manifest_reads.as_deref(), &mut budget)?;
-                let second =
-                    observation::observe(&captured, self.manifest_reads.as_deref(), &mut budget)?;
-                Ok((first, second))
-            };
-            let (observed, rechecked) = match observe() {
+            let (observed, rechecked) = match self.observe_manifest_pair(&captured, &mut budget) {
                 Ok(pair) => pair,
                 Err(ReadFailure::Cancelled) => return Err(Failure::Cancelled.into()),
                 Err(error) => {

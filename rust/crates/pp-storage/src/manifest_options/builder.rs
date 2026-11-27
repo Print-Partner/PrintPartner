@@ -74,13 +74,7 @@ impl ManifestBuilder {
             if index > 0 {
                 output.push(b',');
             }
-            id.0.write_json(output);
-            output.extend_from_slice(b":{\"rule\":");
-            string(&group.rule, output);
-            output.extend_from_slice(b",\"label\":");
-            label(group.label.as_ref(), output);
-            output.extend_from_slice(b",\"parts\":");
-            texts(&group.parts, output);
+            write_open_group(id, group, output);
             write_bounds(group, output);
             output.extend_from_slice(b",\"variants\":[");
             let sources = self.variant_sources.get(id);
@@ -153,13 +147,7 @@ impl ManifestSource {
             if index > 0 {
                 output.push(b',');
             }
-            id.0.write_json(output);
-            output.extend_from_slice(b":{\"rule\":");
-            string(&group.rule, output);
-            output.extend_from_slice(b",\"label\":");
-            label(group.label.as_ref(), output);
-            output.extend_from_slice(b",\"parts\":");
-            texts(&group.parts, output);
+            write_open_group(id, group, output);
             output.extend_from_slice(b",\"variants\":[");
             for (index, variant) in group.variants.iter().enumerate() {
                 if index > 0 {
@@ -185,6 +173,16 @@ impl ManifestSource {
         }
         output.extend_from_slice(b"]}");
     }
+}
+
+fn write_open_group(id: &OptionGroupId, group: &BuilderGroup, output: &mut Vec<u8>) {
+    id.0.write_json(output);
+    output.extend_from_slice(b":{\"rule\":");
+    string(&group.rule, output);
+    output.extend_from_slice(b",\"label\":");
+    label(group.label.as_ref(), output);
+    output.extend_from_slice(b",\"parts\":");
+    texts(&group.parts, output);
 }
 
 fn write_open_variant(variant: &BuilderVariant, output: &mut Vec<u8>) {

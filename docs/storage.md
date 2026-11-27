@@ -551,6 +551,50 @@ does), are GRE-411 part 2b. The migration takes `backups/pre-schema50.db` and
 validates the columns before stamping version 50. A failed step leaves the
 database at 49.
 
+### Checkoff and deduction launcher receipt (GRE-2001)
+
+The [recovery transition inventory](recovery-transitions.md#spoolman-deduction)
+identifies Checkoff and Spoolman as one route and worker boundary. In the
+Rust-only launcher, the burst routes and deduction routes use the same
+Rust owner. The launcher spawns and drains its background deduction
+worker. A deduction is not a generic durable job; it belongs to the
+deduction tables and their recovery rules.
+
+| Entry point | Rust-only behavior |
+| --- | --- |
+| `POST /printer-checkoff/verify-batch` and its `/api/v2` alias | Same Checkoff transaction and idempotency receipt. Verify and Verify batch in the replacement UI both use the batch contract. |
+| `GET` on the same batch paths with `idempotency_key` | Reads the stored applied or undone receipt; does not replay the write. |
+| `POST /printer-checkoff/verify-batch/undo` and its `/api/v2` alias | Undoes Checkoff, not a stock change the worker already made. |
+| `GET /api/v2/spoolman/deductions` and `GET /api/v2/spoolman/deductions/{id}` | List the persisted row or read its detail, including before/current spool grams when known. |
+| `POST /api/v2/spoolman/deductions/{id}/reconcile` | The user's `deducted` answer records that stock already moved; `retry` is a new explicit dispatch of an unresolved row; `dismiss` does not send it. |
+| Legacy single-link `POST /printer-checkoff/verify` and prefixed forms, and `/api/v1` batch/undo paths | No Rust handler or Node fallback. The replacement uses the mounted batch contract; it does not silently replay a mutation through the old route. |
+
+The launcher receipt starts with a disposable Checkoff fixture and a
+loopback Spoolman fake. Both batch aliases observe the same receipt and
+deduction. While the fake holds the PUT before changing stock, the
+deduction list already shows the committed `sending` row. The fake then
+subtracts stock but drops the reply. The row survives restart as
+`unknown`, with the same ID and before/current gram evidence. Neither
+alias replay nor restart repeats the PUT. Reconcile as `deducted`,
+undo through both aliases, and verify again without creating another
+deduction or changing stock again. A separate refusal fixture keeps the
+row failed across restart and makes one more PUT only after an explicit
+`retry` on that same row.
+
+The proof uses the launcher with no Node executable. It does not switch
+production ownership, reconcile a real spool, or claim that a Node
+single-link client can use Rust unchanged. The
+[whole-runtime cutover](adr/0010-whole-runtime-cutover.md) and the other
+operation proofs in [GRE-2002](https://linear.app/greetz/issue/GRE-2002)
+remain separate.
+
+Run the launcher receipt and the neighboring worker/recovery tests:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --features desktop_rebuild --test spoolman_deduction_send --no-tests=fail
+```
+
 ## Pending MCP actions
 
 Schema 51, compiled only with `desktop_rebuild`, adds the `pending_actions` table

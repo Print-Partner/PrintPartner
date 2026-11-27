@@ -10,6 +10,8 @@ mod draft_parts;
 mod farm_status;
 #[path = "tests/filament_catalog.rs"]
 mod filament_catalog;
+#[path = "tests/guide_notes.rs"]
+mod guide_notes;
 #[path = "tests/import_inputs.rs"]
 mod import_inputs;
 #[path = "../../tests/support/mcp_rpc.rs"]

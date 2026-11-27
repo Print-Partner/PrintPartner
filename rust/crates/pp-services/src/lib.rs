@@ -3,6 +3,7 @@
 pub mod build_url;
 pub mod discovery;
 pub mod exports;
+pub mod guide;
 #[cfg(feature = "desktop_rebuild")]
 pub mod kit;
 pub mod mcp_domain;

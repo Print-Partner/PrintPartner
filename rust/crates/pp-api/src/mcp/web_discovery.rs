@@ -31,6 +31,7 @@ pub struct Page {
     pub title: Option<String>,
     pub text: String,
     pub truncated: bool,
+    pub links: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +48,7 @@ pub enum Error {
 }
 
 impl Error {
-    fn result(self) -> ToolResult {
+    pub(super) fn result(self) -> ToolResult {
         let (code, error) = match self {
             Self::Disabled => (
                 "disabled",
@@ -69,7 +70,7 @@ impl Error {
             ),
             Self::ContentType => (
                 "unsupported_content",
-                "Only HTML and plain text pages can be fetched.",
+                "Only HTML, Markdown and plain text pages can be fetched.",
             ),
             Self::Encoding => (
                 "unsupported_encoding",
@@ -134,7 +135,11 @@ async fn fetch(discovery: &dyn Discovery, args: &Value) -> Result<Value, Error> 
         title,
         text,
         truncated,
+        ..
     } = discovery.fetch(url).await?;
+    let end = text.floor_char_boundary(20_000);
+    let truncated = truncated || end < text.len();
+    let text = &text[..end];
     Ok(json!({"ok": true, "url": url, "title": title, "text": text,
         "truncated": truncated, "untrusted_banner": UNTRUSTED}))
 }

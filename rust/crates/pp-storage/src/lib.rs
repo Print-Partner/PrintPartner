@@ -44,6 +44,7 @@ pub mod pending_actions;
 pub mod plan_publication;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plates;
+pub mod source_notes;
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_domain::printer_display_state;
 #[cfg(feature = "desktop_rebuild")]

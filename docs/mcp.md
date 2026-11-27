@@ -16,9 +16,17 @@ Print Partner exposes product operations to AI assistants over the Model Context
 Set `PP_ASSISTANT_WEB_DISCOVERY=1` on the Rust runtime and restart to enable `fetch_web_page`. Set `SEARCH_PROVIDER=brave` and `SEARCH_API_KEY` (or `BRAVE_API_KEY`) as well to enable `web_search`. Rust has no implicit search fallback. Tools that are off are not listed, and calling them by name returns `disabled`.
 
 - `web_search { query, site? }` sends the query and optional hostname filter to Brave. It returns up to five hits with titles, URLs and snippets. It does not fetch the hits.
-- `fetch_web_page { url }` reads HTML or plain text from a public HTTP(S) URL on its default port. It checks every destination, including redirects, and refuses HTTPS downgrades. It uses the page's declared charset when available and refuses undecodable text. It returns the final URL, optional title and up to 20,000 bytes of text, with `truncated` if text was omitted.
+- `fetch_web_page { url }` reads HTML, Markdown or plain text from a public HTTP(S) URL on its default port. It checks every destination, including redirects, and refuses HTTPS downgrades. It uses the page's declared charset when available and refuses undecodable text. It returns the final URL, optional title and up to 20,000 bytes of text, with `truncated` if text was omitted.
 
 Both tools cap remote responses at 512 KiB, use a 12-second deadline and mark the returned text as untrusted evidence. Neither stores a page, adds guide evidence, runs instructions in a page, nor changes product data.
+
+## Read and save guide evidence
+
+- `ingest_guide_text { text }` extracts candidate printer, ref, add-on, replacement, and link hints from pasted text. It never calls a network provider.
+- `ingest_guide_url { url }` uses the same checked fetch as `fetch_web_page`. It requires `PP_ASSISTANT_WEB_DISCOVERY=1`, but no search provider. It returns the final URL and never fetches the links it finds.
+- Both ingest tools reject guide text over 48,000 bytes and return an excerpt of up to 12,000 bytes. Extraction is heuristic: verify candidates against the catalog before using them. Ingest never saves the guide or changes assistant policy.
+- `import_guide_notes { source_name, body_markdown, title?, guide_url? }` stages a Source note. Use the exact name shown in the Library; Rust MCP does not yet list Sources. Pass the guide URL when known; Rust appends it to the note without fetching it. The final body is limited to 20,000 bytes and the title to 300 bytes. The default title is `Guide: <Source>`.
+- Apply saves the reviewed Markdown against the same Source, or updates a Source-level note with the same title. A removed or renamed Source requires a fresh proposal. Applying equivalent content does not rewrite the note.
 
 ## Decide proposals
 

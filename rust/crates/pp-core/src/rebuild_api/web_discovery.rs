@@ -14,7 +14,7 @@ use page_content::PageContent;
 
 const SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 const MAX_BODY: usize = 512 * 1024;
-const MAX_TEXT: usize = 20_000;
+const MAX_TEXT: usize = pp_services::guide::MAX_GUIDE_BYTES;
 const MAX_HITS: usize = 5;
 const MAX_URL: usize = 2_048;
 const MAX_REDIRECTS: usize = 3;
@@ -59,7 +59,10 @@ impl WebDiscovery {
         let (url, response) = follow_page(url, |url| async move {
             self.client
                 .get(url)
-                .header(header::ACCEPT, "text/html,text/plain")
+                .header(
+                    header::ACCEPT,
+                    "text/html,application/xhtml+xml,text/markdown,text/plain",
+                )
                 .send()
                 .await
                 .map_err(network_error)
@@ -224,16 +227,44 @@ fn cap(text: &str, bytes: usize) -> (&str, bool) {
 
 fn page_text(url: String, body: &[u8], content: PageContent) -> Result<Page, Error> {
     let raw = content.decode(body)?;
-    let (title, text) = if content.is_markup() {
+    let (title, text, links) = if content.is_markup() {
         let document = Document::from(raw.as_ref());
         let title = document.select_single("title").text();
         document
             .select("script, style, template, noscript")
             .remove();
         let text = document.select_single("body").formatted_text();
-        (Some(cap(title.trim(), 300).0.to_owned()), text.to_string())
+        let mut links = Vec::new();
+        if let Ok(page) = Url::parse(&url) {
+            let base = document
+                .select_single("base[href]")
+                .attr("href")
+                .and_then(|href| page.join(&href).ok())
+                .filter(|base| !matches!(base.scheme(), "data" | "javascript"))
+                .unwrap_or(page);
+            for node in document.select("body a[href]").nodes() {
+                let Some(link) = node
+                    .attr("href")
+                    .and_then(|href| base.join(&href).ok())
+                    .and_then(|url| pp_services::guide::web_reference(url.as_str()))
+                else {
+                    continue;
+                };
+                if !links.iter().any(|seen| seen == link.as_str()) {
+                    links.push(String::from(link));
+                    if links.len() == 20 {
+                        break;
+                    }
+                }
+            }
+        }
+        (
+            Some(cap(title.trim(), 300).0.to_owned()),
+            text.to_string(),
+            links,
+        )
     } else {
-        (None, raw.into_owned())
+        (None, raw.into_owned(), Vec::new())
     };
     let (text, truncated) = cap(text.trim(), MAX_TEXT);
     Ok(Page {
@@ -241,6 +272,7 @@ fn page_text(url: String, body: &[u8], content: PageContent) -> Result<Page, Err
         title: title.filter(|title| !title.is_empty()),
         text: text.into(),
         truncated,
+        links,
     })
 }
 

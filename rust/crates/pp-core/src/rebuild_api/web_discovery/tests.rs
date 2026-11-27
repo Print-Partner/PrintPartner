@@ -143,6 +143,24 @@ async fn published_page_url_keeps_the_redirect_anchor_without_sending_it() {
 }
 
 #[test]
+fn guide_links_resolve_against_the_first_html_base() {
+    let page = page_text(
+        "https://docs.example.com/manual/start.html".into(),
+        br#"<base href="../shared/"><base href="/ignored/"><a href="parts#spacers">Spacers</a><a href="https://printables.com/model/1">Model</a>"#,
+        content_type("text/html"),
+    )
+    .unwrap();
+    assert_eq!(page.url, "https://docs.example.com/manual/start.html");
+    assert_eq!(
+        page.links,
+        [
+            "https://docs.example.com/shared/parts#spacers",
+            "https://printables.com/model/1",
+        ]
+    );
+}
+
+#[test]
 fn bounds_and_attributes_remote_text() {
     let hits = search_hits(
         &serde_json::to_vec(&serde_json::json!({
@@ -163,12 +181,13 @@ fn bounds_and_attributes_remote_text() {
 
     let page = page_text(
         hits[0].url.clone(),
-        b"<title>Kit &amp; Guide</title><script>omit</script><p>Step one</p><p>Step two</p>",
+        b"<title>Kit &amp; Guide</title><script>omit</script><p><a href='/guide#step'>Step one</a></p><p><a href='mailto:kit@example.com'>Step two</a></p>",
         content_type("text/html"),
     )
     .unwrap();
     assert_eq!(page.title.as_deref(), Some("Kit & Guide"));
     assert_eq!(page.text, "Step one\n\nStep two");
+    assert_eq!(page.links, ["https://docs.example.com/guide#step"]);
     let page = page_text(
         page.url,
         "é".repeat(MAX_TEXT).as_bytes(),
@@ -177,6 +196,14 @@ fn bounds_and_attributes_remote_text() {
     .unwrap();
     assert_eq!(page.text.len(), MAX_TEXT);
     assert!(page.truncated);
+    let markdown = page_text(
+        page.url,
+        b"# README\nPrinter: Kit\n",
+        content_type("text/markdown; charset=UTF-8"),
+    )
+    .unwrap();
+    assert_eq!(markdown.text, "# README\nPrinter: Kit");
+    assert!(!markdown.truncated);
 }
 
 #[test]

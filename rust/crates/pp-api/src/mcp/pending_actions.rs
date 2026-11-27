@@ -1,5 +1,5 @@
 use super::{
-    ErrorData, PresentedCredential, ProductMcp, ToolResult, filament_catalog, plan_accept,
+    ErrorData, PresentedCredential, ProductMcp, ToolResult, filament_catalog, guide, plan_accept,
     plan_history_changes,
 };
 use pp_services::mcp_domain::{DomainPort, ProposedAction};
@@ -249,6 +249,8 @@ impl ProductMcp {
             self.confirm_history_change(action, presented).await
         } else if action.action_type == filament_catalog::ADD {
             self.confirm_custom_filament(action, presented).await
+        } else if action.action_type == guide::IMPORT {
+            self.confirm_guide_note(action, presented).await
         } else {
             match self
                 .in_tools(Some(presented), move |tools| {

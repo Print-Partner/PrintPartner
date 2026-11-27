@@ -267,6 +267,7 @@ The Rust core answers exports on request instead, with no job and no stored file
 ```text
 GET   /api/v2/plans/:id/exports/checklist
 GET   /api/v2/plans/:id/exports/stl-pack[?scope=remaining]
+GET   /api/v2/plans/:id/exports/managed-3mf?plate_revision_id=:revision
 ```
 
 It returns one self-contained HTML page as an attachment named `<build-slug>-v<plan version>-checklist.html`. The page shows the Build name, order number, Plan version and generated time, then every included Part grouped by Source and folder: file name, role, colour swatch, quantity, printed units out of quantity, and notes. Each included tracked Part with a renderable accepted artifact includes a PNG thumbnail derived from the artifact pinned by the accepted Plan, never the current Source revision; legacy, missing, unsafe, oversized or unrenderable artifacts omit the image without omitting the Part. Rendering reads at most 64 MiB per artifact and accepts at most 1,000,000 triangles. The export embeds at most 8 MiB of PNG bytes; if an image would exceed the remaining budget, it and subsequent thumbnails are omitted while all Part rows remain. Quantities and printed counts are those of `GET /api/v2/plans/:id/checkoff/units` at the same moment. The page has no script, embeds images as data URLs, and its Content Security Policy allows only its inline style sheet and data images, so opening it from disk makes no request; all Plan text is escaped. Without a valid session or API key it answers 401, for an unknown Build 404, and for a Build with no accepted Plan 409 with code `no_accepted_plan`. An accepted Plan that needs compatibility repair or was never initialized answers 409 with code `accepted_plan_unavailable`, and busy or stopped storage answers 503. The response also sends the page's Content Security Policy as a header and `Cache-Control: no-store`.
@@ -276,6 +277,21 @@ The STL pack returns a ZIP attachment named `<build-slug>-v<plan version>-stl.zi
 Before the first byte, every Source file the pack needs is opened without following links and checked against its accepted SHA-256. If any is missing or altered, the whole pack is refused: 409 `source_files_unavailable` with a `files` list of `relative_path`, `source` and `reason` for each such file. `scope=remaining` with nothing left answers 409 `nothing_to_pack`, and a pack over 65,535 entries or 4 GiB, the limits of a plain ZIP, answers 422 `pack_too_large`. Credentials, unknown Builds and Builds without an accepted Plan answer as for the checklist.
 
 The archive streams as it is written, so the response is chunked and has no Content-Length. Each file is hashed again as it streams; if one changed after its check, the transfer stops, the client keeps a broken archive rather than wrong bytes, and the server logs a warning naming the Source file.
+
+The managed Plate export downloads a ZIP containing one 3MF model per Plate and
+`manifest.json`. Use the current `plate_revision_id` from the Plate workspace.
+The manifest records the accepted Plan and Plate revisions, printer references,
+Required-unit tokens, filament colors from the Plate's accepted Plan revision,
+and the verified Source revision and SHA-256 for each model object. Geometry uses
+the saved placement in millimeters; the models do not contain sliced toolpaths.
+A missing or stale revision, an
+explicitly unplaced unit, an invalid layout, or missing or changed Source
+geometry refuses the whole download. A valid session or API key is required.
+The Rust-only runtime generates the archive on a blocking worker and stores
+nothing. One export runs at a time, with caps of 10,000 objects, 5 million
+triangles, 64 MiB per Source file, 256 MiB of Source reads, and 128 MiB each
+for model XML and the ZIP. Repeated objects count toward those limits.
+The direct 3MF export and slicer handoff are not part of this route.
 
 ### Printers and integrations
 

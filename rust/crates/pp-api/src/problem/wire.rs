@@ -175,6 +175,16 @@ problem_codes! {
     // `POST /api/v2/printer-send-queue` with `link_checkoff`: the preview's
     // units are no longer the units the file links. Preview again.
     SendUnitsChanged = "send_units_changed";
+    // The managed Plate 3MF download.
+    PlateRevisionRequired = "plate_revision_required";
+    PlatesNotPublished = "plates_not_published";
+    StaleAcceptedPlan = "stale_accepted_plan";
+    PlateRevisionChanged = "plate_revision_changed";
+    InvalidPlateLayout = "invalid_plate_layout";
+    UnplacedUnits = "unplaced_units";
+    ThreeMfTooLarge = "three_mf_too_large";
+    ArtifactGeometryMismatch = "artifact_geometry_mismatch";
+    SourceFilesUnavailable = "source_files_unavailable";
 }
 
 impl ProblemType {

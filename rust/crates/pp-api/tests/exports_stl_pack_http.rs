@@ -23,6 +23,8 @@ use std::{
 mod accepted_plate;
 #[path = "support/loopback.rs"]
 mod loopback;
+#[path = "support/managed_plate_3mf.rs"]
+mod managed_plate_3mf;
 
 const PACK: &str = "/api/v2/plans/1/exports/stl-pack";
 const STL: &str = "repos/1/revisions/accepted/included.stl";

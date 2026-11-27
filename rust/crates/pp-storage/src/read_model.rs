@@ -99,7 +99,7 @@ pub struct ReadClient {
     /// The writer queue reads submit to, and the reader pool
     /// [`ReadClient::read_plan`] reads on.
     pub(crate) storage: crate::SettingsClient,
-    repos: PathBuf,
+    pub(crate) repos: PathBuf,
     pub(crate) policy: auth::AuthPolicy,
 }
 pub(super) struct Command {

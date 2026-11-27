@@ -1,8 +1,9 @@
 //! Accepted Plan exports: `GET /api/v2/plans/{id}/exports/checklist` (GRE-1447)
 //! answers one self-contained HTML attachment and `.../exports/stl-pack`
-//! (GRE-1525, [`pack`]) a ZIP of the STLs, each built from one reader-pool
-//! read per request. No job runs and nothing is stored.
+//! (GRE-1525, [`pack`]) a ZIP of the STLs. [`managed`] exports the accepted
+//! Plates as 3MF. Each uses one reader-pool snapshot. Nothing is stored.
 
+mod managed;
 mod pack;
 
 use crate::{
@@ -25,7 +26,11 @@ use pp_storage::{
     read_model::{AcceptedRead, Artifact, Part, ReadClient, Snapshot, views},
 };
 use serde_json::{Map, json};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use tokio::sync::Semaphore;
 
 const MAX_CHECKLIST_THUMBNAIL_BYTES: usize = 8 * 1024 * 1024;
 static CHECKLIST_RENDER_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
@@ -34,6 +39,7 @@ static CHECKLIST_RENDER_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore
 struct App {
     gate: Gate,
     client: ReadClient,
+    managed_render: Arc<Semaphore>,
 }
 
 /// Mounts the export routes under `/api/v2` when `PP_DESKTOP_REBUILD` was
@@ -44,9 +50,14 @@ pub fn exports_router(config: AcceptedHttpConfig, client: ReadClient) -> Router 
     };
     let routes = Router::new()
         .route("/plans/{id}/exports/checklist", get(checklist))
-        .route("/plans/{id}/exports/stl-pack", get(pack::stl_pack));
+        .route("/plans/{id}/exports/stl-pack", get(pack::stl_pack))
+        .route("/plans/{id}/exports/managed-3mf", get(managed::download));
     gate.guard(Router::new().nest("/api/v2", routes))
-        .with_state(App { gate, client })
+        .with_state(App {
+            gate,
+            client,
+            managed_render: Arc::new(Semaphore::new(1)),
+        })
 }
 
 /// Why an export was refused.

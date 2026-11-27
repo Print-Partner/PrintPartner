@@ -42,18 +42,39 @@ impl ManifestBuilder {
         }
         output.extend_from_slice(b"],\"resolved_selections\":");
         self.resolved_selections.write_selections_json(output);
-        output.extend_from_slice(b",\"merged_option_groups\":{");
+        output.extend_from_slice(b",\"merged_option_groups\":");
+        self.write_groups(output);
+        output.push(b'}');
+    }
+
+    pub fn write_option_groups(&self, stored: &KitManifest, output: &mut Vec<u8>) {
+        output.extend_from_slice(b"{\"plan_id\":");
+        output.extend_from_slice(self.profile_id.to_string().as_bytes());
+        output.extend_from_slice(b",\"selections\":");
+        stored.write_selections_json(output);
+        output.extend_from_slice(b",\"option_groups\":");
+        self.write_groups(output);
+        output.extend_from_slice(b",\"sources\":[");
+        for (index, source) in self.sources.iter().enumerate() {
+            if index > 0 {
+                output.push(b',');
+            }
+            let summary = serde_json::json!({
+                "source_id": source.source_id, "name": source.name, "layer_type": source.layer_type,
+                "exists": source.loaded_yaml.is_some(), "scanned_part_count": source.scanned_parts.len(),
+            });
+            output.extend_from_slice(summary.to_string().as_bytes());
+        }
+        output.extend_from_slice(b"]}");
+    }
+
+    fn write_groups(&self, output: &mut Vec<u8>) {
+        output.push(b'{');
         for (index, (id, group)) in self.merged_option_groups.iter().enumerate() {
             if index > 0 {
                 output.push(b',');
             }
-            id.0.write_json(output);
-            output.extend_from_slice(b":{\"rule\":");
-            string(&group.rule, output);
-            output.extend_from_slice(b",\"label\":");
-            label(group.label.as_ref(), output);
-            output.extend_from_slice(b",\"parts\":");
-            texts(&group.parts, output);
+            write_open_group(id, group, output);
             write_bounds(group, output);
             output.extend_from_slice(b",\"variants\":[");
             let sources = self.variant_sources.get(id);
@@ -85,7 +106,7 @@ impl ManifestBuilder {
             }
             output.extend_from_slice(b"]}");
         }
-        output.extend_from_slice(b"}}");
+        output.push(b'}');
     }
 }
 
@@ -126,13 +147,7 @@ impl ManifestSource {
             if index > 0 {
                 output.push(b',');
             }
-            id.0.write_json(output);
-            output.extend_from_slice(b":{\"rule\":");
-            string(&group.rule, output);
-            output.extend_from_slice(b",\"label\":");
-            label(group.label.as_ref(), output);
-            output.extend_from_slice(b",\"parts\":");
-            texts(&group.parts, output);
+            write_open_group(id, group, output);
             output.extend_from_slice(b",\"variants\":[");
             for (index, variant) in group.variants.iter().enumerate() {
                 if index > 0 {
@@ -158,6 +173,16 @@ impl ManifestSource {
         }
         output.extend_from_slice(b"]}");
     }
+}
+
+fn write_open_group(id: &OptionGroupId, group: &BuilderGroup, output: &mut Vec<u8>) {
+    id.0.write_json(output);
+    output.extend_from_slice(b":{\"rule\":");
+    string(&group.rule, output);
+    output.extend_from_slice(b",\"label\":");
+    label(group.label.as_ref(), output);
+    output.extend_from_slice(b",\"parts\":");
+    texts(&group.parts, output);
 }
 
 fn write_open_variant(variant: &BuilderVariant, output: &mut Vec<u8>) {

@@ -78,6 +78,12 @@ test("every DTO has accepted Rust fixtures", () => {
   for (const name of Object.keys(dtoSchemas)) assert(document.fixtures.some((fixture) => fixture.dto === name && fixture.rust_accepts), name);
 });
 
+test("proposal decisions use text IDs and staging uses the reviewed draft route", () => {
+  assert.equal(routePath("applyProposal", { id: "proposal-2" }), "/api/v2/proposals/proposal-2/apply");
+  assert.equal(routePath("dismissProposal", { id: "proposal-2" }), "/api/v2/proposals/proposal-2/dismiss");
+  assert.equal(routePath("stageDraftProposal", { id: 7, draft_id: 11 }), "/api/v2/plans/7/drafts/11/propose");
+});
+
 test("the web UI's workflow contract parses every Rust BuildWorkflow fixture", () => {
   const workflows = document.fixtures.filter((fixture) => fixture.dto === "BuildWorkflow" && fixture.rust_accepts);
   assert(workflows.length > 0);

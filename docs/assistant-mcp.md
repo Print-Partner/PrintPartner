@@ -156,7 +156,7 @@ Common tools include:
 | `confirm_apply` | Apply one pending proposal. |
 | `dismiss_proposed_action` | Discard one pending proposal. |
 
-Pending proposals belong to the MCP session that created them, and on Rust only the API key that opened that session can list or confirm them. A reconnect may start a new session.
+In Rust, proposals belong to the installation, not the MCP session. Another authenticated MCP session or the replacement UI's **Apply** panel can list, apply, or dismiss them. An MCP session itself still belongs to the API key that opened it.
 
 Print Partner does not expose a tool that starts a print without a separate product confirmation flow.
 

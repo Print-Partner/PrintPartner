@@ -27,10 +27,11 @@ use crate::{
         planning::{
             BuildPlanningBrief, FilamentInventoryKind, RequirementStatus, RoleFilamentAssignment,
         },
+        stock::{SpoolmanIntegration, spoolman_integration},
     },
     write::authorize,
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::{sync::atomic::AtomicBool, time::Duration};
 
@@ -122,10 +123,27 @@ impl BuildGraphClient {
         self.settings
             .read(name, &AtomicBool::new(false), wait, move |tx| {
                 let installation = authorize(tx, &credential, policy)?;
-                if spoolman {
-                    spoolman_on(tx, installation.id(), build)?;
-                }
-                stored_brief::<RoleFilamentError>(tx, installation.id(), build).map(drop)
+                check_assignment(tx, installation.id(), build, spoolman)
+            })?
+    }
+
+    /// Resolves a Spoolman integration for this Build in the caller's installation.
+    pub fn role_filament_integration(
+        &self,
+        credential: Credential,
+        build: pp_domain::PositiveId,
+        integration_id: String,
+        wait: Duration,
+    ) -> Result<Option<SpoolmanIntegration>, RoleFilamentError> {
+        let policy = self.policy;
+        let name = "build_graph.role_filament_integration";
+        self.settings
+            .read(name, &AtomicBool::new(false), wait, move |tx| {
+                let installation = authorize(tx, &credential, policy)?;
+                let tenant = installation.id();
+                check_assignment(tx, tenant, build, true)?;
+                spoolman_integration(tx, tenant, &integration_id)
+                    .map_err(|error| RoleFilamentError::Writer(WriterFailure::from(error)))
             })?
     }
 
@@ -163,10 +181,22 @@ impl BuildGraphClient {
     }
 }
 
+fn check_assignment(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: pp_domain::PositiveId,
+    spoolman: bool,
+) -> Result<(), RoleFilamentError> {
+    if spoolman {
+        spoolman_on(tx, tenant, build)?;
+    }
+    stored_brief::<RoleFilamentError>(tx, tenant, build).map(drop)
+}
+
 /// Spoolman's effective setting for `build`: the user's choice under the
 /// Build's Plan override, as Checkoff's deduction reads it.
 fn spoolman_on(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Transaction<'_>,
     tenant: &str,
     build: pp_domain::PositiveId,
 ) -> Result<(), RoleFilamentError> {

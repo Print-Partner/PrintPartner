@@ -20,6 +20,8 @@
 //! (`crate::checkoff_progress::history_undo`), checked only for the page's
 //! entries, in the same transaction.
 
+pub mod plan;
+
 use super::Credential;
 use crate::working_drafts::restore::snapshot_revision;
 use crate::{Envelope, Shared, WriterOwner, auth, checkoff_progress::history_undo::Receipts};

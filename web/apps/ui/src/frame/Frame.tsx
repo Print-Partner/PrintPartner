@@ -110,6 +110,9 @@ function FrameBody() {
         <span className="pp-name">Print Partner</span>
         <PulseLine />
         <ConnectionLine />
+        <NavLink to="/apply" className="pp-header-button">
+          Apply
+        </NavLink>
         <button
           type="button"
           className="pp-header-button"

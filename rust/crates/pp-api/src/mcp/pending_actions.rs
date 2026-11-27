@@ -3,8 +3,8 @@ use pp_services::mcp_domain::{DomainPort, ProposedAction};
 use pp_storage::{
     WriterFailure,
     pending_actions::{
-        ActionError, ClaimToken, End, NewAction, PendingAction, PendingActionsClient, StagedBy,
-        State,
+        ActionError, ClaimToken, End, Listing, NewAction, PendingAction, PendingActionsClient,
+        StagedBy, State,
     },
 };
 use serde_json::{Value, json};
@@ -13,9 +13,12 @@ use std::{
     time::Duration,
 };
 
+#[path = "proposal_http.rs"]
+pub(super) mod http;
+
 pub(super) struct Decision {
     end: End,
-    result: ToolResult,
+    body: Value,
 }
 
 impl Decision {
@@ -26,13 +29,7 @@ impl Decision {
             (Some(false), _) => End::Released,
             _ => return Self::unknown(UNKNOWN),
         };
-        Self {
-            end,
-            result: ToolResult {
-                text: serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
-                is_error: end != End::Applied,
-            },
-        }
+        Self { end, body }
     }
 
     pub(super) fn unknown(detail: &str) -> Self {
@@ -40,6 +37,19 @@ impl Decision {
             "ok": false, "code": "outcome_unknown", "outcome_unknown": true, "detail": detail,
         }))
     }
+
+    fn tool_result(self) -> ToolResult {
+        ToolResult {
+            text: serde_json::to_string_pretty(&self.body)
+                .unwrap_or_else(|_| self.body.to_string()),
+            is_error: self.end != End::Applied,
+        }
+    }
+}
+
+enum DecisionRefusal {
+    Queue(ActionError),
+    Unavailable,
 }
 
 const UNKNOWN: &str =
@@ -74,6 +84,18 @@ impl ProductMcp {
         staged_by: StagedBy,
         result: ToolResult,
     ) -> ToolResult {
+        match self.stage(action, presented, staged_by).await {
+            Ok(_) => result,
+            Err(error) => refusal(error, ""),
+        }
+    }
+
+    pub(super) async fn stage(
+        &self,
+        action: ProposedAction,
+        presented: PresentedCredential,
+        staged_by: StagedBy,
+    ) -> Result<PendingAction, ActionError> {
         let queue = self.reads.accepted.pending_actions();
         let wait = self.reads.wait;
         let action = NewAction {
@@ -86,7 +108,7 @@ impl ProductMcp {
             depends_on: Vec::new(),
             staged_by,
         };
-        match tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             queue.stage(
                 presented.into_credential(),
                 action,
@@ -95,22 +117,22 @@ impl ProductMcp {
             )
         })
         .await
-        {
-            Ok(Ok(_)) => result,
-            Ok(Err(error)) => refusal(error, ""),
-            Err(_) => unavailable(),
-        }
+        .map_err(worker_failure)?
     }
 
-    pub(super) async fn list_proposals(&self, presented: PresentedCredential) -> ToolResult {
+    async fn list(&self, presented: PresentedCredential) -> Result<Listing, ActionError> {
         let queue = self.reads.accepted.pending_actions();
         let wait = self.reads.wait;
-        match tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             queue.list(presented.into_credential(), &AtomicBool::new(false), wait)
         })
         .await
-        {
-            Ok(Ok(list)) => {
+        .map_err(worker_failure)?
+    }
+
+    pub(super) async fn list_proposals(&self, presented: PresentedCredential) -> ToolResult {
+        match self.list(presented).await {
+            Ok(list) => {
                 let actions: Vec<Value> = list.actions.iter().map(listed_action).collect();
                 let mut body = json!({ "actions": actions });
                 if list.omitted > 0 {
@@ -120,8 +142,7 @@ impl ProductMcp {
                     serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
                 )
             }
-            Ok(Err(error)) => refusal(error, ""),
-            Err(_) => unavailable(),
+            Err(error) => refusal(error, ""),
         }
     }
 
@@ -130,26 +151,26 @@ impl ProductMcp {
         arguments: Value,
         presented: PresentedCredential,
     ) -> ToolResult {
+        let id = action_id(&arguments);
+        match self.dismiss(id.clone(), presented).await {
+            Ok(()) => ToolResult::ok(json!({ "ok": true, "action_id": id }).to_string()),
+            Err(error) => refusal(error, &id),
+        }
+    }
+
+    async fn dismiss(&self, id: String, presented: PresentedCredential) -> Result<(), ActionError> {
         let queue = self.reads.accepted.pending_actions();
         let wait = self.reads.wait;
-        let id = action_id(&arguments);
-        let dismissed = {
-            let id = id.clone();
-            tokio::task::spawn_blocking(move || {
-                queue.dismiss(
-                    presented.into_credential(),
-                    &id,
-                    &AtomicBool::new(false),
-                    wait,
-                )
-            })
-            .await
-        };
-        match dismissed {
-            Ok(Ok(())) => ToolResult::ok(json!({ "ok": true, "action_id": id }).to_string()),
-            Ok(Err(error)) => refusal(error, &id),
-            Err(_) => unavailable(),
-        }
+        tokio::task::spawn_blocking(move || {
+            queue.dismiss(
+                presented.into_credential(),
+                &id,
+                &AtomicBool::new(false),
+                wait,
+            )
+        })
+        .await
+        .map_err(worker_failure)?
     }
 
     pub(super) async fn confirm_proposal(
@@ -157,17 +178,40 @@ impl ProductMcp {
         arguments: Value,
         presented: PresentedCredential,
     ) -> ToolResult {
-        let owner = self.clone();
-        // A dropped MCP request must not interrupt claim, apply, or settlement.
-        tokio::spawn(async move { owner.decide(arguments, presented).await })
-            .await
-            .unwrap_or_else(|_| decision_unavailable())
+        let id = action_id(&arguments);
+        match self.confirm(id.clone(), arguments, presented.clone()).await {
+            Ok(decision) => decision.tool_result(),
+            Err(DecisionRefusal::Queue(
+                error @ (ActionError::NotFound
+                | ActionError::AlreadyApplied { .. }
+                | ActionError::OutcomeUnknown),
+            )) => self.reconcile_proposal(presented, id, error).await,
+            Err(DecisionRefusal::Queue(error)) => refusal(error, &id),
+            Err(DecisionRefusal::Unavailable) => unavailable(),
+        }
     }
 
-    async fn decide(&self, arguments: Value, presented: PresentedCredential) -> ToolResult {
+    async fn confirm(
+        &self,
+        id: String,
+        arguments: Value,
+        presented: PresentedCredential,
+    ) -> Result<Decision, DecisionRefusal> {
+        let owner = self.clone();
+        // A dropped request must not interrupt claim, apply, or settlement.
+        tokio::spawn(async move { owner.decide(id, arguments, presented).await })
+            .await
+            .unwrap_or_else(|_| Ok(decision_unavailable()))
+    }
+
+    async fn decide(
+        &self,
+        id: String,
+        arguments: Value,
+        presented: PresentedCredential,
+    ) -> Result<Decision, DecisionRefusal> {
         let queue = self.reads.accepted.pending_actions();
         let wait = self.reads.wait;
-        let id = action_id(&arguments);
         let claim = {
             let (queue, presented, id) = (queue.clone(), presented.clone(), id.clone());
             tokio::task::spawn_blocking(move || {
@@ -182,15 +226,8 @@ impl ProductMcp {
         };
         let (action, token) = match claim {
             Ok(Ok(claim)) => claim.into_parts(),
-            Ok(Err(
-                error @ (ActionError::NotFound
-                | ActionError::AlreadyApplied { .. }
-                | ActionError::OutcomeUnknown),
-            )) => {
-                return self.reconcile_proposal(presented, id, error).await;
-            }
-            Ok(Err(error)) => return refusal(error, &id),
-            Err(_) => return unavailable(),
+            Ok(Err(error)) => return Err(DecisionRefusal::Queue(error)),
+            Err(_) => return Err(DecisionRefusal::Unavailable),
         };
         let action = ProposedAction {
             id: action.id,
@@ -200,7 +237,10 @@ impl ProductMcp {
             summary: action.summary,
             params: action.params,
         };
-        let decision = if action.action_type == plan_accept::PROPOSE {
+        let decision = if matches!(
+            action.action_type.as_str(),
+            plan_accept::PROPOSE | plan_accept::REVIEWED
+        ) {
             self.confirm_accept(action, presented).await
         } else {
             match self
@@ -213,11 +253,11 @@ impl ProductMcp {
                 _ => Decision::unknown(UNKNOWN),
             }
         };
-        if record_decision(queue, token, decision.end, wait).await {
-            decision.result
+        Ok(if record_decision(queue, token, decision.end, wait).await {
+            decision
         } else {
             decision_unavailable()
-        }
+        })
     }
 
     async fn reconcile_proposal(
@@ -235,7 +275,7 @@ impl ProductMcp {
             })
             .await
         {
-            Ok(Ok(Some(body))) => Decision::confirmed(body).result,
+            Ok(Ok(Some(body))) => Decision::confirmed(body).tool_result(),
             _ => refusal(error, &id),
         }
     }
@@ -311,8 +351,14 @@ fn unavailable() -> ToolResult {
     )
 }
 
-fn decision_unavailable() -> ToolResult {
-    Decision::unknown("The proposal decision could not be recorded. Check the affected work before proposing again.").result
+fn decision_unavailable() -> Decision {
+    Decision::unknown(
+        "The proposal decision could not be recorded. Check the affected work before proposing again.",
+    )
+}
+
+fn worker_failure(error: tokio::task::JoinError) -> ActionError {
+    WriterFailure::Internal(error.into()).into()
 }
 
 fn refusal(error: ActionError, id: &str) -> ToolResult {

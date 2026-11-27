@@ -123,6 +123,11 @@ problem_codes! {
     IdempotencyConflict = "idempotency_conflict";
     OutcomeUnknown = "outcome_unknown";
     AlreadyApplied = "already_applied";
+    ProposalAlreadyDismissed = "already_dismissed";
+    ProposalApplying = "applying";
+    ProposalExpired = "expired";
+    ProposalDependencyBlocked = "dependency_blocked";
+    ProposalInvalidated = "invalidated_by_restore";
     ReconciliationRequired = "reconciliation_required";
     SnapshotNotRestorable = "snapshot_not_restorable";
     SnapshotNotFound = "snapshot_not_found";

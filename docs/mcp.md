@@ -9,17 +9,35 @@ Print Partner exposes product operations to AI assistants over the Model Context
 - MCP runs over streamable HTTP at `/api/v1/mcp`.
 - Every request needs an API key, including requests from the same machine.
 - Read tools return current data. Write tools stage a proposal; they do not change the Build, Plan, or Checkoff until the client calls `confirm_apply`.
-- Tool names and schemas stay the same, so existing clients keep working.
+- Rust keeps existing tool names. The Plan history reads below use explicit Plan IDs.
 
 ## Decide proposals
 
-In Rust, `list_pending_actions` returns the installation's open proposals in any authenticated MCP session, including after reconnect or restart. Each row includes `staged_by` (the MCP client name), `created_at`, `expires_at`, `depends_on`, and `state`. The list returns the newest 200 open proposals, oldest first, and reports `omitted` if more exist.
+In Rust, `list_pending_actions` returns the installation's open proposals in any authenticated MCP session, including after reconnect or restart. Each row includes `staged_by` (the MCP client name or `UI`), `created_at`, `expires_at`, `depends_on`, and `state`. The list returns the newest 200 open proposals, oldest first, and reports `omitted` if more exist.
 
 `confirm_apply` takes one proposal by `action_id` and runs its existing Rust operation. It refuses an expired proposal or one with an unapplied dependency; `blocked_by` identifies the dependency to resolve first. A refusal that wrote nothing leaves the proposal pending. An uncertain outcome stays visible as `unknown` and cannot be applied again. Check the affected work before proposing again.
 
 `dismiss_proposed_action` removes an open proposal from the list without running its operation. It cannot dismiss a proposal while it is applying. A second decision normally returns `already_applied` or `already_dismissed`; Checkoff can return its stored receipt instead, without writing again.
 
+Open **Apply** in the replacement UI to review that same queue. It rereads the queue while open and refreshes it after a decision. HTTP applies and dismisses through the same Rust operations as MCP; expired or uncertain proposals remain visible, and confirming out of order names the blocking proposal. In the Plan tab, **Review and accept → Stage for Apply** stages the exact reviewed revision without publishing it. Apply it in the panel or with `confirm_apply`. If the draft changes first, review and stage the new revision.
+
 ## Ported tools
+
+### Plan history
+
+These five reads use the request's API key. An ID owned by another tenant is treated as missing. They do not create a Draft or accept a Plan.
+
+| Tool | Reads |
+| --- | --- |
+| `get_plan_option_groups` `{ plan_id }` | Current kit selections and observed variants with their Source provenance. |
+| `get_plan_snapshot` `{ plan_id, revision_id? }` | Current Build configuration, Accepted revision history, and the open Draft's ID, base and stale flag. With a revision ID, returns only that immutable revision's basis and Part count. |
+| `get_plan_review` `{ plan_id }` | Accepted revision basis, issue counts, blockers, role and filament totals, and Source layers. It checks local artifacts but does not query live spool inventory. |
+| `search_plan_parts` `{ plan_id, query, limit?, revision_id? }` | Case-insensitive filename and relative path matches in the current Accepted revision or a named revision. Each hit includes its Part key, Part ID, revision Part ID and Required-unit tokens. |
+| `compare_plans` `{ plan_a_id, plan_b_id }` | Both Builds' revision bases, base Sources, addons, refs, kit selection changes, recent decisions and Parts unique to either Plan. A tracked Part can differ at the same path if its Source or STL digest changed. |
+
+An empty Build has no Accepted revision (`basis.kind: "empty"`). A stale Build can still report its Accepted revision; `build_stale` means its current configuration no longer matches that revision. A missing Plan answers `plan_not_found`, a missing or unrelated revision answers `not_found`, and an uninitialized or compatibility-dirty head or changing option-group observation answers `stale_plan`. These refusals set `isError` and carry an `error` message and a machine-readable `code`.
+
+### Other reads and proposals
 
 - `get_build_workflow` reads the Build workflow with the request's API key, the same projection as `GET /plans/{id}/workflow` and the task feed ([Build workflow](build-workflow.md)). Errors answer `{"error": "plan_id required"}`, `{"error": "Build not found"}` or `{"error": "Build workflow is unavailable"}`. The last covers a storage or authentication failure, a Build that fails its integrity checks, and a body that can't be serialized. Every error sets `isError`.
 

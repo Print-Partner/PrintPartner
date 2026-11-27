@@ -115,6 +115,7 @@ const SAMPLE_BODIES: &[(&str, Sample)] = &[
         "signIn",
         || json!({"email": "client@example.com", "password": "password-1234"}),
     ),
+    ("stageDraftProposal", || sample("acceptDraft")),
     ("startSourceSync", || json!({"project_ids": [1]})),
     ("undoCheckoffBurst", || json!({"undo_token": "ppb_unknown"})),
     ("undoDismissUnattributedPrint", || json!({})),

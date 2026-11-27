@@ -42,6 +42,9 @@ mod scratch;
 use checkoff_apply::apply;
 use checkoff_fixture::Fixture;
 
+#[path = "spoolman_deduction_send/recovery.rs"]
+mod recovery;
+
 const FILAMENTS: &str = include_str!("../../../../fixtures/integrations/spoolman/filaments.json");
 const SUFFICIENT: &str =
     include_str!("../../../../fixtures/integrations/spoolman/spools-sufficient.json");
@@ -65,18 +68,43 @@ struct Hit {
     body: Option<Value>,
 }
 
-/// Holds the next single-spool GET: `arrived` fires when it comes in, and
-/// the reply waits for `release`.
 struct Gate {
     arrived: oneshot::Sender<()>,
     release: oneshot::Receiver<()>,
+}
+
+impl Gate {
+    fn hold(slot: &Mutex<Option<Self>>) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (arrived, on_arrival) = oneshot::channel();
+        let (release, on_release) = oneshot::channel();
+        *slot.lock().unwrap() = Some(Self {
+            arrived,
+            release: on_release,
+        });
+        (on_arrival, release)
+    }
+
+    async fn pause(slot: &Mutex<Option<Self>>) {
+        let held = slot.lock().unwrap().take();
+        if let Some(held) = held {
+            let _ = held.arrived.send(());
+            let _ = held.release.await;
+        }
+    }
+}
+
+#[derive(Default)]
+struct Gates {
+    spool_get: Mutex<Option<Gate>>,
+    before_put: Mutex<Option<Gate>>,
+    after_put: Mutex<Option<Gate>>,
 }
 
 struct Fake {
     origin: String,
     stock: Arc<Mutex<Vec<Value>>>,
     log: Arc<Mutex<Vec<Hit>>>,
-    gate: Arc<Mutex<Option<Gate>>>,
+    gates: Arc<Gates>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -88,10 +116,10 @@ impl Fake {
             serde_json::from_str::<Vec<Value>>(SUFFICIENT).unwrap(),
         ));
         let log = Arc::new(Mutex::new(Vec::new()));
-        let gate = Arc::new(Mutex::new(None));
+        let gates = Arc::new(Gates::default());
         let stock_task = Arc::clone(&stock);
         let log_task = Arc::clone(&log);
-        let gate_task = Arc::clone(&gate);
+        let gate_task = Arc::clone(&gates);
         let task = tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
@@ -109,7 +137,7 @@ impl Fake {
             origin,
             stock,
             log,
-            gate,
+            gates,
             task,
         }
     }
@@ -117,13 +145,7 @@ impl Fake {
     /// Holds the next `GET /api/v1/spool/{id}`. Returns the receiver that
     /// fires when it arrives and the sender that lets it reply.
     fn hold_next_spool_get(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
-        let (arrived, on_arrival) = oneshot::channel();
-        let (release, on_release) = oneshot::channel();
-        *self.gate.lock().unwrap() = Some(Gate {
-            arrived,
-            release: on_release,
-        });
-        (on_arrival, release)
+        Gate::hold(&self.gates.spool_get)
     }
 
     fn puts(&self) -> Vec<Hit> {
@@ -163,7 +185,7 @@ async fn serve_one(
     mode: Mode,
     stock: Arc<Mutex<Vec<Value>>>,
     log: Arc<Mutex<Vec<Hit>>>,
-    gate: Arc<Mutex<Option<Gate>>>,
+    gates: Arc<Gates>,
 ) -> std::io::Result<()> {
     let request = read_request(&mut socket).await?;
     let (method, path, body) = match parse_request(&request) {
@@ -176,9 +198,11 @@ async fn serve_one(
         body: body.clone(),
     });
     if method == "PUT" {
+        Gate::pause(&gates.before_put).await;
         match mode {
             Mode::Apply => {
                 apply_use(&stock, &path, &body);
+                Gate::pause(&gates.after_put).await;
                 let reply = stock_body(&stock, &path);
                 return write_response(&mut socket, 200, "OK", &reply).await;
             }
@@ -207,11 +231,7 @@ async fn serve_one(
         }
     }
     if path.starts_with("/api/v1/spool/") {
-        let held = gate.lock().unwrap().take();
-        if let Some(held) = held {
-            let _ = held.arrived.send(());
-            let _ = held.release.await;
-        }
+        Gate::pause(&gates.spool_get).await;
     }
     let reply = match path.as_str() {
         "/api/v1/filament" => Some(FILAMENTS.to_owned()),
@@ -736,28 +756,41 @@ fn requests(fake: &Fake) -> usize {
 
 struct Api {
     origin: String,
+    stop: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Api {
     async fn start(owner: &WriterOwner) -> Self {
+        Self::serve(|origin| {
+            let config = AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
+            pp_api::spoolman_deductions::spoolman_deductions_router(
+                config,
+                owner.spoolman_deductions(desktop_policy()).unwrap(),
+                Arc::new(SpoolmanInventory::new().unwrap()),
+            )
+        })
+        .await
+    }
+
+    async fn serve(router: impl FnOnce(&str) -> axum::Router) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let config = AcceptedHttpConfig::from_startup(&origin, "default", Some("1")).unwrap();
-        let router = pp_api::spoolman_deductions::spoolman_deductions_router(
-            config,
-            owner.spoolman_deductions(desktop_policy()).unwrap(),
-            Arc::new(SpoolmanInventory::new().unwrap()),
-        );
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await
-            .unwrap()
+        let router = router(&origin);
+        let (stop, stopped) = oneshot::channel();
+        let server = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            let _ = stopped.await;
         });
-        Self { origin, task }
+        let task = tokio::spawn(async move { server.await.unwrap() });
+        Self {
+            origin,
+            stop: Some(stop),
+            task,
+        }
     }
 }
 

@@ -526,14 +526,22 @@ and only when `failure` is `refused`. `spool_grams_before` is the grams Spoolman
 reported before the send, stored when a row is claimed, and may be null.
 
 A claim moves one `pending` row to `sending` and stores that before value. It
-applies only while the row is still `pending`, and it commits before any
-request. The send worker's claim also requires the stored integration to equal
+applies only while the row is still `pending`, and it commits before the
+stock-changing PUT. The send worker's claim requires the stored integration to equal
 the one it read before the spool read; otherwise the row stays `pending`. A finish applies only while the row is `sending`. Opening the database
 marks every `sending` row `unknown` with failure `interrupted`, before seeding
 and before job recovery, and does not send it. Nothing in this step returns
 `sending`, `unknown` or `failed` to `pending`. Reconcile is the only later
 write that returns `unknown` or `failed` to `pending`. Undoing a burst still
 removes only its `pending` and `skipped` rows.
+
+The GRE-1427 recovery tests use the Rust Checkoff and deduction routes, the
+deduction worker, and a loopback Spoolman fake. They observe the committed
+`sending` claim before the fake applies the deduction. A lost reply stays
+`unknown` after reopen; interruption before the worker records the reply
+recovers as `unknown` on reopen. Neither is resent. Undoing and re-verifying
+Checkoff after a successful deduction neither restores the remote stock nor
+deducts it again.
 
 With the Spoolman Module off at send time the row stays `pending` and is sent
 once the Module is on again. That is not a new skip reason, and this step does

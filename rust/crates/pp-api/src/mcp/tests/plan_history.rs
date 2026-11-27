@@ -41,6 +41,12 @@ async fn mcp_plan_history_only_reads_the_callers_builds() {
                 "integer"
             );
         }
+        if name == "search_plan_parts" {
+            assert_eq!(
+                listed["inputSchema"]["required"],
+                json!(["plan_id", "query"])
+            );
+        }
         assert_eq!(
             server
                 .unkeyed_call_status(&headers, name, arguments(name, 1))

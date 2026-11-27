@@ -35,7 +35,7 @@ const STALE: Refusal = Refusal::new(
     "Plan inputs changed during the read; try again.",
 );
 
-pub(super) fn describe_revision_selector(catalog: &mut Value) {
+pub(super) fn describe_inputs(catalog: &mut Value) {
     if let Some(tools) = catalog["tools"].as_array_mut() {
         for tool in tools {
             if matches!(tool["name"].as_str(), Some(SNAPSHOT | SEARCH)) {
@@ -43,6 +43,9 @@ pub(super) fn describe_revision_selector(catalog: &mut Value) {
                     "type": "integer", "minimum": 1,
                     "description": "Read a specific Accepted revision of this Plan instead of the current head.",
                 });
+            }
+            if tool["name"] == SEARCH {
+                tool["inputSchema"]["required"] = json!(["plan_id", "query"]);
             }
         }
     }

@@ -674,7 +674,7 @@ impl ServerHandler for ProductMcp {
             .in_tools(presented, |tools| tools.list_tools())
             .await?
             .map_err(|error| internal(error.0))?;
-        plan_history::describe_revision_selector(&mut tools);
+        plan_history::describe_inputs(&mut tools);
         let mut tools: ListToolsResult = serde_json::from_value(tools).map_err(internal)?;
         if let Some(list) = tools
             .tools

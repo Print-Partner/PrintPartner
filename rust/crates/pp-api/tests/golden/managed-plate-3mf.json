@@ -1,0 +1,14 @@
+[
+  {
+    "name": "[Content_Types].xml",
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n  <Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>\n</Types>"
+  },
+  {
+    "name": "_rels/.rels",
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n  <Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>\n</Relationships>"
+  },
+  {
+    "name": "3D/3dmodel.model",
+    "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n<resources>\n<object id=\"1\" name=\"included__ppu_574c8d5f92624f029e21705a8ebb8a1b\" partnumber=\"ppu_574c8d5f92624f029e21705a8ebb8a1b\" type=\"model\"><mesh><vertices>\n<vertex x=\"5\" y=\"5\" z=\"0\"/>\n<vertex x=\"25\" y=\"5\" z=\"0\"/>\n<vertex x=\"25\" y=\"35\" z=\"0\"/>\n<vertex x=\"5\" y=\"35\" z=\"0\"/>\n<vertex x=\"5\" y=\"5\" z=\"10\"/>\n<vertex x=\"25\" y=\"5\" z=\"10\"/>\n<vertex x=\"25\" y=\"35\" z=\"10\"/>\n<vertex x=\"5\" y=\"35\" z=\"10\"/>\n</vertices><triangles>\n<triangle v1=\"0\" v2=\"1\" v3=\"2\"/>\n<triangle v1=\"0\" v2=\"2\" v3=\"3\"/>\n<triangle v1=\"4\" v2=\"5\" v3=\"6\"/>\n<triangle v1=\"4\" v2=\"6\" v3=\"7\"/>\n<triangle v1=\"0\" v2=\"1\" v3=\"5\"/>\n<triangle v1=\"0\" v2=\"5\" v3=\"4\"/>\n<triangle v1=\"3\" v2=\"2\" v3=\"6\"/>\n<triangle v1=\"3\" v2=\"6\" v3=\"7\"/>\n<triangle v1=\"0\" v2=\"3\" v3=\"7\"/>\n<triangle v1=\"0\" v2=\"7\" v3=\"4\"/>\n<triangle v1=\"1\" v2=\"2\" v3=\"6\"/>\n<triangle v1=\"1\" v2=\"6\" v3=\"5\"/>\n</triangles></mesh></object>\n</resources><build>\n<item objectid=\"1\" partnumber=\"ppu_574c8d5f92624f029e21705a8ebb8a1b\"/>\n</build></model>\n"
+  }
+]

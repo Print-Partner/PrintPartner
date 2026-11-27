@@ -9,6 +9,7 @@
 | STL pack layout: `<role>/<folder>/<stem>_<NN>.stl` names, case-insensitive `_2` suffixes, unsafe segments, the `remaining` scope, refusals and the download name | `golden_stl_pack_layout_and_archive` | `rust/crates/pp-api/tests/golden/stl-pack.json` |
 | STL pack archive bytes from `ZipStream`, with a fixed DOS date | same test, `archive_hex` | same file |
 | STL pack through `GET /api/v2/plans/{id}/exports/stl-pack` on the accepted-Plate fixture | `golden_stl_pack_route_is_byte_identical` | `stl-pack-route.json` |
+| Managed Plate 3MF download: member names and uncompressed bytes, welded mesh, and build-item placement | `golden_managed_plate_3mf_members_and_placement` | `managed-plate-3mf.json` |
 | HTML checklist: grouping, ordering, escaping, swatches, order number | `golden_checklist_html` | `checklist.html` |
 | HTML checklist through `GET /api/v2/plans/{id}/exports/checklist` | `golden_checklist_route_normalizes_only_the_generated_time` | `checklist-route.html` |
 | Checkoff attribution of printer object names to Required units: Required-unit names, `stem_NN` file names, duplicates, completed units, ambiguity, excluded Parts, the fallback file name | `golden_checkoff_attribution` | `checkoff-attribution.json` |
@@ -22,8 +23,10 @@ GRE-424's `ticket_t_58_three_mf_managed_archive_golden_survives_restart` opens t
 managed Plate ZIP and its 3MF on the Node accepted-Plate fixture. It checks
 package members, manifest provenance and identities, and the mesh with the
 saved translation applied, against `pp-api/tests/support/managed_plate_3mf.model`.
-It compares the uncompressed model, not the compressor's bytes. GRE-1775
-tracks the remaining 3MF golden proof.
+GRE-1775 adds a regenerable golden of all three uncompressed 3MF members.
+The model pins the welded vertices and triangles and the build item's identity
+transform: the writer applies the saved Plate translation to the vertices
+rather than emitting a `transform` attribute. Neither test pins the compressor's bytes.
 
 GRE-1981's `ticket_t_58_three_mf_direct_golden_survives_restart` checks the
 standalone 3MF package members, selected Required-unit identity, material and

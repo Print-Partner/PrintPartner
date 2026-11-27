@@ -1,6 +1,6 @@
 #![cfg(feature = "desktop_rebuild")]
 //! GRE-1116: Rust golden tests for the behaviour worth keeping from the old
-//! screens (ADR 0008): the STL pack layout and archive, the HTML checklist,
+//! screens (ADR 0008): the STL pack, managed Plate 3MF, HTML checklist,
 //! Checkoff attribution of object names to Required units, and Plate packing.
 //! Each test runs the Rust code and compares its output with a file in
 //! `tests/golden/` that Rust wrote. A change to any of them fails here.
@@ -18,13 +18,14 @@
 use accepted_plate::{data_dir, initialize_fixture};
 use axum::http::{Request, StatusCode, header};
 use checkoff_http::{Fixture, loopback};
-use pp_api::{accepted::AcceptedHttpConfig, exports::exports_router};
+use pp_api::{accepted::AcceptedHttpConfig, exports::exports_router, plates::plates_router};
 use pp_services::exports::{
     self, ChecklistPart, ChecklistPlan, Colour,
     pack::{self, Limits, PackPart, PackRefusal, PackUnit, Scope, ZipStream},
 };
 use pp_storage::{
     Limits as StorageLimits, WriterOwner,
+    auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy},
     checkoff_progress::attribution::resolve,
     production::{
         layout::{
@@ -53,6 +54,7 @@ const FILES: &[&str] = &[
     "checklist.html",
     "checklist-route.html",
     "checkoff-attribution.json",
+    "managed-plate-3mf.json",
     "plate-packing.json",
     "stl-pack.json",
     "stl-pack-route.json",
@@ -195,6 +197,63 @@ async fn golden_stl_pack_route_is_byte_identical() {
     });
     goldens().check_json("stl-pack-route.json", &actual);
     owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn golden_managed_plate_3mf_members_and_placement() {
+    let dir = data_dir();
+    let init = initialize_fixture(dir.path());
+    let owner = WriterOwner::open(dir.path(), StorageLimits::default())
+        .unwrap()
+        .0;
+    let config = AcceptedHttpConfig::from_startup(loopback::ORIGIN, "default", Some("1")).unwrap();
+    let plates = owner
+        .accepted_plates(AuthPolicy {
+            registration: RegistrationPolicy::Open,
+            session_tenant: SessionTenantPolicy::AccountTenant,
+            first_user: FirstUserTenant::NewUser,
+        })
+        .unwrap();
+    let router = exports_router(config.clone(), owner.accepted_reads().unwrap())
+        .merge(plates_router(config, plates));
+    let cookie = "pp_session=read-fixture-secret";
+    let (status, plate) = loopback::send(
+        &router,
+        "POST",
+        "/api/v2/plans/1/plates/initialize",
+        Some(&init.to_string()),
+        Some(cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{plate}");
+    let revision = plate["plate_revision_id"].as_u64().unwrap();
+    let request = Request::get(format!(
+        "/api/v2/plans/1/exports/managed-3mf?plate_revision_id={revision}"
+    ))
+    .header("cookie", cookie);
+    let response = loopback::respond(&router, request, Vec::new()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let archive = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    owner.shutdown().unwrap();
+
+    let mut zip = zip::ZipArchive::new(Cursor::new(archive)).unwrap();
+    let mut package = Vec::new();
+    zip.by_name("plates/0001.3mf")
+        .unwrap()
+        .read_to_end(&mut package)
+        .unwrap();
+    let mut package = zip::ZipArchive::new(Cursor::new(package)).unwrap();
+    let entries: Vec<Value> = (0..package.len())
+        .map(|index| {
+            let mut entry = package.by_index(index).unwrap();
+            let mut xml = String::new();
+            entry.read_to_string(&mut xml).unwrap();
+            json!({"name": entry.name().unwrap(), "xml": xml})
+        })
+        .collect();
+    goldens().check_json("managed-plate-3mf.json", &json!(entries));
 }
 
 // --- HTML checklist -------------------------------------------------------

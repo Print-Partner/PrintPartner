@@ -32,6 +32,48 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+async function openNoteForm() {
+  let notes: BoardNote[] = [];
+  const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === "/health") return Response.json({});
+    if (path === "/api/v2/board/builds") return Response.json({ builds: [build] });
+    if (init?.method === "POST") {
+      notes = [note];
+      return Response.json(note);
+    }
+    return Response.json({ notes });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const router = createMemoryRouter(routes, { initialEntries: ["/board"] });
+  render(<App router={router} queryClient={createQueryClient()} />);
+  const add = screen.getByRole<HTMLButtonElement>("button", { name: "Add note" });
+  await waitFor(() => expect(add.disabled).toBe(false));
+  fireEvent.click(add);
+  await screen.findByRole("option", { name: build.name });
+  fireEvent.change(screen.getByRole("combobox", { name: "Build" }), {
+    target: { value: String(build.id) },
+  });
+  return fetchMock;
+}
+
+it("retains overlong input and refuses to save it until shortened", async () => {
+  const fetchMock = await openNoteForm();
+  const input = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Note" });
+  expect(input.hasAttribute("maxlength")).toBe(false);
+  const pasted = "é".repeat(1_000) + "TAIL";
+  fireEvent.change(input, { target: { value: pasted } });
+  expect(input.value).toBe(pasted);
+  expect(input.getAttribute("aria-invalid")).toBe("true");
+  expect(screen.getByRole("alert").textContent).toContain("exceeds 2,000 bytes");
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "Save note" });
+  expect(save.disabled).toBe(true);
+  fireEvent.click(save);
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  fireEvent.change(input, { target: { value: note.body } });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(save.disabled).toBe(false);
+});
+
 it("lets an owner select the 65th Build when the full Build list is refused", async () => {
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === "/api/v2/plans") return Response.json({}, { status: 409 });
@@ -55,11 +97,10 @@ it("lets an owner select the 65th Build when the full Build list is refused", as
   fireEvent.change(screen.getByRole("combobox", { name: "Build" }), { target: { value: "65" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: note.body } });
   fireEvent.click(screen.getByRole("button", { name: "Save note" }));
-  await waitFor(() =>
-    expect(fetchMock.mock.calls.find(([, init]) => init?.method === "POST")?.[1]?.body).toBe(
-      JSON.stringify({ build_id: 65, body: note.body }),
-    ),
-  );
+  await waitFor(() => {
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse(String(post?.[1]?.body ?? "null"))).toEqual({ build_id: 65, body: note.body });
+  });
 });
 
 it("opens Board from the rail, creates a local note, and links to its Build", async () => {

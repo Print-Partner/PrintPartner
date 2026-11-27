@@ -28,12 +28,14 @@ function NoteForm({ close }: { close: () => void }) {
     },
     onSettled: () => client.invalidateQueries({ queryKey: boardKey }),
   });
-  const validBody = note.trim().length > 0 && new TextEncoder().encode(note.trim()).length <= 2_000;
+  const trimmedNote = note.trim();
+  const tooLong = new TextEncoder().encode(trimmedNote).length > 2_000;
   const enabled =
     connection === "online" &&
     builds.isSuccess &&
     builds.data.builds.some(({ id }) => String(id) === build) &&
-    validBody &&
+    trimmedNote.length > 0 &&
+    !tooLong &&
     !save.isPending;
 
   function submit(event: FormEvent) {
@@ -79,13 +81,21 @@ function NoteForm({ close }: { close: () => void }) {
           value={note}
           onChange={(event) => setNote(event.target.value)}
           rows={4}
-          maxLength={2_000}
           disabled={save.isPending}
           aria-describedby="board-note-limit"
+          aria-invalid={tooLong || undefined}
           required
         />
       </label>
-      <p id="board-note-limit">Up to 2,000 bytes. Some characters use more than one byte.</p>
+      <p
+        id="board-note-limit"
+        role={tooLong ? "alert" : undefined}
+        className={tooLong ? "pp-field-error" : undefined}
+      >
+        {tooLong
+          ? "This note exceeds 2,000 bytes. Shorten it before saving."
+          : "Up to 2,000 bytes. Some characters use more than one byte."}
+      </p>
       {save.isError && (
         <p role="alert" className="pp-field-error">
           {reason(save.error)}

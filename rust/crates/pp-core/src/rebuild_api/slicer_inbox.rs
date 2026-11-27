@@ -1,6 +1,7 @@
 use pp_os::{Dir, FileOpen, status_of};
 use pp_services::native_slicers::{Artifact, Delivery, Handoff, HandoffFailure, Instance, Picker};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     io::{self, Read, Write},
@@ -119,10 +120,7 @@ impl Handoff for LocalInbox {
             return Err(UnknownInstance);
         }
         let dir = inbox(&root, id).map_err(|_| Unavailable)?;
-        let filename = format!(
-            "revision-{}-plate-{}.3mf",
-            artifact.plate_revision_id, artifact.plate_ordinal
-        );
+        let filename = artifact_filename(&artifact);
         let already_delivered = publish(&dir, &filename, &artifact.bytes)?;
         Ok(Delivery {
             instance_id: id.into(),
@@ -130,6 +128,14 @@ impl Handoff for LocalInbox {
             already_delivered,
         })
     }
+}
+
+fn artifact_filename(artifact: &Artifact) -> String {
+    let digest = hex::encode(Sha256::digest(&artifact.bytes));
+    format!(
+        "revision-{}-plate-{}-{digest}.3mf",
+        artifact.plate_revision_id, artifact.plate_ordinal
+    )
 }
 
 fn inbox(root: &Dir, id: &str) -> io::Result<Dir> {
@@ -255,11 +261,11 @@ mod tests {
         )
         .unwrap();
         let inbox = root.join("orca");
-        fs::write(
-            inbox.join(".revision-21-plate-2.3mf.pending"),
-            b"interrupted write",
-        )
-        .unwrap();
+        let pending = inbox.join(format!(
+            ".{}.pending",
+            artifact_filename(&artifact(b"exact bytes"))
+        ));
+        fs::write(&pending, b"interrupted write").unwrap();
         assert_eq!(
             adapter.picker().default_instance_id.as_deref(),
             Some("orca")
@@ -268,7 +274,7 @@ mod tests {
         assert!(!sent.already_delivered);
         let destination = inbox.join(&sent.filename);
         assert_eq!(fs::read(&destination).unwrap(), b"exact bytes");
-        assert!(!inbox.join(".revision-21-plate-2.3mf.pending").exists());
+        assert!(!pending.exists());
         let before = Dir::open(&inbox)
             .unwrap()
             .status_nofollow(&sent.filename)
@@ -282,17 +288,29 @@ mod tests {
                 .unwrap()
                 .already_delivered
         );
-        assert_eq!(
-            restarted
-                .deliver(None, artifact(b"wrong bytes"))
-                .unwrap_err(),
-            HandoffFailure::ArtifactConflict
-        );
         let after = Dir::open(&inbox)
             .unwrap()
             .status_nofollow(&sent.filename)
             .unwrap();
         assert_eq!(before.identity(), after.identity());
-        assert_eq!(fs::read(destination).unwrap(), b"exact bytes");
+        assert_eq!(fs::read(&destination).unwrap(), b"exact bytes");
+
+        // Restore can reuse the same database revision and ordinal without
+        // replacing an inbox. New bytes must get a different retained file.
+        let restored = restarted.deliver(None, artifact(b"new bytes")).unwrap();
+        assert!(!restored.already_delivered);
+        assert_ne!(restored.filename, sent.filename);
+        assert_eq!(
+            fs::read(inbox.join(restored.filename)).unwrap(),
+            b"new bytes"
+        );
+        fs::write(&destination, b"tampered file").unwrap();
+        assert_eq!(
+            restarted
+                .deliver(None, artifact(b"exact bytes"))
+                .unwrap_err(),
+            HandoffFailure::ArtifactConflict
+        );
+        assert_eq!(fs::read(destination).unwrap(), b"tampered file");
     }
 }

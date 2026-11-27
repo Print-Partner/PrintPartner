@@ -42,7 +42,7 @@ pub struct Delivery {
     pub already_delivered: bool,
 }
 
-/// Delivers one artifact per instance and Plate revision/ordinal. Replays
+/// Delivers one immutable artifact to the chosen instance. Replays
 /// must not hand the same artifact off again.
 pub trait Handoff: Send + Sync {
     fn picker(&self) -> Picker;

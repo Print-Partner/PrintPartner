@@ -323,9 +323,10 @@ chooses another instance. The request verifies the accepted revision and Source
 bytes as for the managed export, then publishes one standalone 3MF. The result
 names the `instance_id`, `filename` in that inbox, and whether it was
 `already_delivered`. Open or copy that file in the slicer; leave the original
-in place so a retry, including after restart, does not publish it again. A
-different file at that name is refused, not overwritten. This handoff does not
-launch applications, slice, or send a print.
+in place so a retry, including after restart, does not publish it again. The
+filename includes the 3MF's SHA-256, so reusing a revision ID after restore
+cannot overwrite a different Plate. A different file at the same name is
+refused. This handoff does not launch applications, slice, or send a print.
 
 ### Printers and integrations
 

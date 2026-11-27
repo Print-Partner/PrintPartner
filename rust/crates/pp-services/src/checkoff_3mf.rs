@@ -48,31 +48,39 @@ fn inspect_bounded(bytes: &[u8], max_bytes: usize) -> Result<Vec<Object>, Refusa
     if archive.len() > 4096 {
         return Err(Refusal::Limit);
     }
-    let index = match archive.index_for_name("_rels/.rels") {
+    let index = match unique_member(&archive, |name| name.eq_ignore_ascii_case("_rels/.rels"))? {
         Some(index) => {
             let relations =
                 read_member(&mut archive, index, max_bytes.min(MAX_RELATIONSHIPS_BYTES))?;
             let target =
                 model_target(std::str::from_utf8(&relations).map_err(|_| Refusal::Package)?)?;
-            archive.index_for_name(&target).ok_or(Refusal::Package)?
+            unique_member(&archive, |name| name.eq_ignore_ascii_case(&target))?
+                .ok_or(Refusal::Package)?
         }
         None => {
             // Older packages can omit the relationship. Only a single model
             // is unambiguous in that case.
-            let mut only_model = None;
-            for (index, name) in archive.file_names().enumerate() {
-                let name = name.map_err(|_| Refusal::Package)?;
-                if name.to_ascii_lowercase().ends_with(".model")
-                    && only_model.replace(index).is_some()
-                {
-                    return Err(Refusal::Package);
-                }
-            }
-            only_model.ok_or(Refusal::Package)?
+            unique_member(&archive, |name| {
+                name.to_ascii_lowercase().ends_with(".model")
+            })?
+            .ok_or(Refusal::Package)?
         }
     };
     let document = read_member(&mut archive, index, max_bytes)?;
     model(std::str::from_utf8(&document).map_err(|_| Refusal::Model)?)
+}
+
+fn unique_member(
+    archive: &ZipArchive<Cursor<&[u8]>>,
+    matches: impl Fn(&str) -> bool,
+) -> Result<Option<usize>, Refusal> {
+    let mut found = None;
+    for (index, name) in archive.file_names().enumerate() {
+        if matches(&name.map_err(|_| Refusal::Package)?) && found.replace(index).is_some() {
+            return Err(Refusal::Package);
+        }
+    }
+    Ok(found)
 }
 
 fn read_member(
@@ -534,9 +542,14 @@ mod tests {
 
     #[test]
     fn inspects_the_declared_root_model_even_when_a_conventional_name_exists() {
-        let package = |relationship: Option<&str>| {
+        let package = |relationship: Option<&str>, duplicate: bool| {
             let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
-            for (path, name) in [("3D/3dmodel.model", "wrong"), ("selected.model", "right")] {
+            let models = [
+                ("3D/3dmodel.model", "wrong"),
+                ("selected.model", "right"),
+                ("SELECTED.model", "wrong"),
+            ];
+            for (path, name) in models.into_iter().take(if duplicate { 3 } else { 2 }) {
                 archive
                     .start_file(path, SimpleFileOptions::default())
                     .unwrap();
@@ -544,19 +557,26 @@ mod tests {
             }
             if let Some(target) = relationship {
                 archive
-                    .start_file("_rels/.rels", SimpleFileOptions::default())
+                    .start_file("_RELS/.RELS", SimpleFileOptions::default())
                     .unwrap();
                 write!(archive, r#"<Relationships><Relationship Type="{MODEL_RELATION}" Target="{target}"/></Relationships>"#).unwrap();
             }
             archive.finish().unwrap().into_inner()
         };
         assert_eq!(
-            inspect(&package(Some("/selected.model"))).unwrap()[0].name,
+            inspect(&package(Some("/SELECTED.MODEL"), false)).unwrap()[0].name,
             "right"
         );
         for relationship in [None, Some("/missing.model"), Some("../selected.model")] {
-            assert_eq!(inspect(&package(relationship)), Err(Refusal::Package));
+            assert_eq!(
+                inspect(&package(relationship, false)),
+                Err(Refusal::Package)
+            );
         }
+        assert_eq!(
+            inspect(&package(Some("/selected.model"), true)),
+            Err(Refusal::Package)
+        );
         assert_eq!(model_target("</Relationships>"), Err(Refusal::Package));
     }
 }

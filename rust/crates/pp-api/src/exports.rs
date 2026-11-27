@@ -5,6 +5,7 @@
 
 mod managed;
 mod pack;
+mod slicer;
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, build_id},
@@ -12,13 +13,14 @@ use crate::{
     problem,
 };
 use axum::{
-    Router,
-    extract::{Path, Request, State},
+    Extension, Router,
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{StatusCode, header},
     response::Response,
-    routing::get,
+    routing::{get, post},
 };
 use pp_services::exports::{self, ChecklistPart, ChecklistPlan, Colour, pack::PackRefusal};
+use pp_services::native_slicers::Handoff;
 use pp_storage::{
     WriterFailure,
     accepted_artifacts::{ArtifactFailure, ArtifactOpenMode, OpenedArtifact},
@@ -45,13 +47,33 @@ struct App {
 /// Mounts the export routes under `/api/v2` when `PP_DESKTOP_REBUILD` was
 /// exactly `1` or `true`; otherwise nothing.
 pub fn exports_router(config: AcceptedHttpConfig, client: ReadClient) -> Router {
+    exports_router_with_slicer(config, client, None)
+}
+
+/// Adds local native slicer routes only when the runtime provides an adapter.
+pub fn exports_router_with_slicer(
+    config: AcceptedHttpConfig,
+    client: ReadClient,
+    slicer: Option<Arc<dyn Handoff>>,
+) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
     };
-    let routes = Router::new()
+    let mut routes = Router::new()
         .route("/plans/{id}/exports/checklist", get(checklist))
         .route("/plans/{id}/exports/stl-pack", get(pack::stl_pack))
         .route("/plans/{id}/exports/managed-3mf", get(managed::download));
+    if let Some(slicer) = slicer {
+        routes = routes.merge(
+            Router::new()
+                .route("/slicer-instances", get(slicer::picker))
+                .route(
+                    "/plans/{id}/exports/slicer-handoff",
+                    post(slicer::deliver).layer(DefaultBodyLimit::max(4096)),
+                )
+                .layer(Extension(slicer)),
+        );
+    }
     gate.guard(Router::new().nest("/api/v2", routes))
         .with_state(App {
             gate,

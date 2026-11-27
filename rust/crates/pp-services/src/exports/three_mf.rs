@@ -80,15 +80,7 @@ impl Bundle {
             .xml_remaining
             .checked_sub(xml.len())
             .ok_or(Refusal::OutputLimit)?;
-        let mut package = ZipWriter::new(BoundedBuffer::new(self.max_bytes));
-        for (name, bytes) in [
-            ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
-            ("_rels/.rels", RELATIONSHIPS.as_bytes()),
-            (MODEL_PATH, xml.as_slice()),
-        ] {
-            member(&mut package, name, bytes, CompressionMethod::Deflated)?;
-        }
-        let bytes = package.finish()?.into_bytes();
+        let bytes = package(&xml, self.max_bytes)?;
         let entry = format!("plates/{ordinal:04}.3mf");
         member(&mut self.zip, &entry, &bytes, CompressionMethod::Stored)?;
         Ok(entry)
@@ -107,6 +99,18 @@ impl Bundle {
     }
 }
 
+fn package(xml: &[u8], max_bytes: usize) -> Result<Vec<u8>, Refusal> {
+    let mut package = ZipWriter::new(BoundedBuffer::new(max_bytes));
+    for (name, bytes) in [
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", RELATIONSHIPS.as_bytes()),
+        (MODEL_PATH, xml),
+    ] {
+        member(&mut package, name, bytes, CompressionMethod::Deflated)?;
+    }
+    Ok(package.finish()?.into_bytes())
+}
+
 pub struct Model {
     xml: BoundedBuffer,
     items: Vec<String>,
@@ -122,6 +126,11 @@ pub struct Object<'a> {
 }
 
 impl Model {
+    /// Encode the same standalone 3MF that a bundle includes for this model.
+    pub fn into_3mf(self, max_bytes: usize) -> Result<Vec<u8>, Refusal> {
+        package(&self.finish()?, max_bytes)
+    }
+
     pub fn object(&mut self, object: Object<'_>) -> Result<usize, Refusal> {
         let id = self.items.len() + 1;
         if id > MAX_OBJECTS {

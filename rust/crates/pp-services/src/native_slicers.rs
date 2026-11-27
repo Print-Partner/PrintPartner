@@ -1,10 +1,57 @@
-//! Native macOS bundle discovery, separate from profile-file discovery.
+//! Native slicer discovery and managed Plate handoff, separate from profile-file discovery.
 
 use crate::discovery::SlicerKind;
+use serde::Serialize;
 use std::{
     fs, io,
     path::{Path, PathBuf},
 };
+
+#[derive(Default, Serialize)]
+pub struct Picker {
+    pub instances: Vec<Instance>,
+    pub default_instance_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct Instance {
+    pub id: String,
+    pub name: String,
+    pub available: bool,
+}
+
+/// A standalone 3MF generated from one verified managed Plate snapshot.
+pub struct Artifact {
+    pub plate_revision_id: i64,
+    pub plate_ordinal: u32,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandoffFailure {
+    UnknownInstance,
+    NoDefault,
+    Unavailable,
+    ArtifactConflict,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Delivery {
+    pub instance_id: String,
+    pub filename: String,
+    pub already_delivered: bool,
+}
+
+/// Delivers one artifact per instance and Plate revision/ordinal. Replays
+/// must not hand the same artifact off again.
+pub trait Handoff: Send + Sync {
+    fn picker(&self) -> Picker;
+    fn deliver(
+        &self,
+        instance_id: Option<&str>,
+        artifact: Artifact,
+    ) -> Result<Delivery, HandoffFailure>;
+}
 
 #[derive(Clone, Debug)]
 pub struct NativeRoots {

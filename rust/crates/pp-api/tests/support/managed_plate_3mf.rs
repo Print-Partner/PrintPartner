@@ -6,12 +6,19 @@ use axum::{
     http::{Request, StatusCode, header},
     response::Response,
 };
-use pp_api::{accepted::AcceptedHttpConfig, exports::exports_router, plates::plates_router};
+use pp_api::{
+    NetworkAdmission,
+    accepted::AcceptedHttpConfig,
+    exports::{exports_router, exports_router_with_slicer},
+    plates::plates_router,
+};
+use pp_services::native_slicers::{Artifact, Delivery, Handoff, HandoffFailure, Instance, Picker};
 use pp_storage::{Limits, WriterOwner};
 use serde_json::{Value, json};
 use std::{
     io::{Cursor, Read},
     path::Path,
+    sync::{Arc, Mutex},
 };
 use zip::ZipArchive;
 
@@ -94,6 +101,114 @@ fn read_members(bytes: &[u8], names: &[&str]) -> Vec<Vec<u8>> {
             bytes
         })
         .collect()
+}
+
+#[derive(Default)]
+struct FakeSlicer(Mutex<Vec<Artifact>>);
+
+impl Handoff for FakeSlicer {
+    fn picker(&self) -> Picker {
+        Picker {
+            instances: vec![Instance {
+                id: "fake".into(),
+                name: "Fake".into(),
+                available: true,
+            }],
+            default_instance_id: Some("fake".into()),
+        }
+    }
+
+    fn deliver(
+        &self,
+        instance: Option<&str>,
+        artifact: Artifact,
+    ) -> Result<Delivery, HandoffFailure> {
+        assert_eq!(instance, Some("fake"));
+        self.0.lock().unwrap().push(artifact);
+        Ok(Delivery {
+            instance_id: "fake".into(),
+            filename: "fixture.3mf".into(),
+            already_delivered: false,
+        })
+    }
+}
+
+#[tokio::test]
+async fn local_slicer_receives_only_the_requested_verified_3mf() {
+    let (dir, owner, exports, _) = ready_fixture().await;
+    let fake = Arc::new(FakeSlicer::default());
+    let config = AcceptedHttpConfig::from_startup(loopback::ORIGIN, "default", Some("1")).unwrap();
+    let routes =
+        exports_router_with_slicer(config, owner.accepted_reads().unwrap(), Some(fake.clone()));
+    let picker = "/api/v2/slicer-instances";
+    let mount = "/api/v2/plans/1/exports/slicer-handoff";
+    let (status, body) = loopback::send(&routes, "GET", picker, None, COOKIE).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["default_instance_id"], "fake");
+    assert_eq!(body["instances"][0]["available"], true);
+    assert_eq!(
+        loopback::send(&exports, "GET", picker, None, COOKIE)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let network = routes.clone().layer(axum::Extension(NetworkAdmission {
+        origin: loopback::ORIGIN.into(),
+        host: "127.0.0.1:4100".into(),
+    }));
+    let request = |revision, ordinal| {
+        json!({
+            "plate_revision_id": revision, "plate_ordinal": ordinal, "instance_id": "fake"
+        })
+        .to_string()
+    };
+    for (router, path, body, cookie, status) in [
+        (
+            &routes,
+            mount,
+            request(2, 1),
+            None,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            &network,
+            mount,
+            request(2, 1),
+            COOKIE,
+            StatusCode::FORBIDDEN,
+        ),
+        (&routes, mount, request(1, 1), COOKIE, StatusCode::CONFLICT),
+        (&routes, mount, request(2, 9), COOKIE, StatusCode::NOT_FOUND),
+        (
+            &routes,
+            "/api/v2/plans/999/exports/slicer-handoff",
+            request(2, 1),
+            COOKIE,
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let (actual, response) = loopback::send(router, "POST", path, Some(&body), cookie).await;
+        assert_eq!(actual, status, "{response}");
+    }
+    assert!(fake.0.lock().unwrap().is_empty());
+    let archive = archive_bytes(&exports).await;
+    let members = read_members(&archive, &["manifest.json", "plates/0001.3mf"]);
+    let (status, body) = loopback::send(&routes, "POST", mount, Some(&request(2, 1)), COOKIE).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    std::fs::write(dir.path().join(STL), b"changed after Accept").unwrap();
+    assert_eq!(
+        loopback::send(&routes, "POST", mount, Some(&request(2, 1)), COOKIE)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let delivered = fake.0.lock().unwrap();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(
+        (delivered[0].plate_revision_id, delivered[0].plate_ordinal),
+        (2, 1)
+    );
+    assert_eq!(delivered[0].bytes, members[1]);
 }
 
 #[tokio::test]

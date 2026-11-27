@@ -291,7 +291,41 @@ The Rust-only runtime generates the archive on a blocking worker and stores
 nothing. One export runs at a time, with caps of 10,000 objects, 5 million
 triangles, 64 MiB per Source file, 256 MiB of Source reads, and 128 MiB each
 for model XML and the ZIP. Repeated objects count toward those limits.
-The direct 3MF export and slicer handoff are not part of this route.
+Direct 3MF export and slicer handoff are separate from the bundle download.
+
+#### Local slicer handoff
+
+```text
+GET  /api/v2/slicer-instances
+POST /api/v2/plans/:id/exports/slicer-handoff
+```
+
+These routes require a signed-in session on the Rust-only loopback desktop.
+They are not mounted in Node, on the headless server, or on a shared listener.
+The picker returns `instances` (each with `id`, `name` and `available`) and
+`default_instance_id` (null when the configured default is unavailable).
+Configure them locally in `<data>/slicer-handoff/instances.json`, for example:
+
+```json
+{"default":"orca","instances":[{"id":"orca","name":"OrcaSlicer"}]}
+```
+
+Create one inbox directory next to the config for each instance, named by its
+ID. On Unix it must be owned by the desktop user and have mode 0700. Missing
+inboxes show as unavailable. The config is read on each request: instance IDs
+use lowercase ASCII letters, digits and hyphens, start with a letter and are at
+most 32 characters. The config may list up to 32 instances. An absent or invalid
+config yields an empty picker. There is no remote config endpoint.
+
+POST with `plate_revision_id`, the one-based `plate_ordinal`, and optionally
+`instance_id`. Omitting the instance uses only the configured default; it never
+chooses another instance. The request verifies the accepted revision and Source
+bytes as for the managed export, then publishes one standalone 3MF. The result
+names the `instance_id`, `filename` in that inbox, and whether it was
+`already_delivered`. Open or copy that file in the slicer; leave the original
+in place so a retry, including after restart, does not publish it again. A
+different file at that name is refused, not overwritten. This handoff does not
+launch applications, slice, or send a print.
 
 ### Printers and integrations
 

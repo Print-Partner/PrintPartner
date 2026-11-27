@@ -22,6 +22,15 @@ pub(crate) struct CapturedManifestGraph {
     sources: Vec<CapturedSource>,
 }
 
+impl CapturedManifestGraph {
+    pub(crate) fn stored_selections(&self) -> KitManifest {
+        self.stored_kit
+            .as_deref()
+            .and_then(|raw| KitManifest::from_stored(raw).ok())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct CapturedSource {
     layer_id: i64,

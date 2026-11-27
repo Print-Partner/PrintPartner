@@ -58,13 +58,16 @@ fn read(path: &Path) -> Option<Value> {
         yaml(&bytes)
     }
 }
-pub(crate) fn load(data: &Path) -> Value {
-    let shipped_catalog = yaml(include_bytes!(
+fn shipped_catalog() -> Value {
+    yaml(include_bytes!(
         // ast-grep-ignore: no-writer-family-literal -- Read-only addon evidence; no catalog or domain-pack writes.
         "../../../../../../web/apps/server/src/data/kit-catalog.yaml"
     ))
-    .unwrap_or_default();
-    let catalog = [
+    .unwrap_or_default()
+}
+
+fn installed_catalog(data: &Path) -> Option<Value> {
+    [
         // ast-grep-ignore: no-writer-family-literal -- Read-only addon evidence; no catalog or domain-pack writes.
         "kit-catalog.json",
         // ast-grep-ignore: no-writer-family-literal -- Read-only addon evidence; no catalog or domain-pack writes.
@@ -76,7 +79,11 @@ pub(crate) fn load(data: &Path) -> Value {
     ]
     .iter()
     .find_map(|p| read(&data.join(p)).filter(Value::is_object))
-    .unwrap_or_else(|| shipped_catalog.clone());
+}
+
+pub(crate) fn load(data: &Path) -> Value {
+    let shipped_catalog = shipped_catalog();
+    let catalog = installed_catalog(data).unwrap_or_else(|| shipped_catalog.clone());
     // ast-grep-ignore: no-writer-family-literal -- Read-only addon evidence; no catalog or domain-pack writes.
     let root = data.join("assistant-domain");
     let sources: Vec<_> = fs::read_dir(root.join("sources"))
@@ -89,4 +96,50 @@ pub(crate) fn load(data: &Path) -> Value {
     // ast-grep-ignore: no-writer-family-literal -- Read-only addon evidence; no catalog or domain-pack writes.
     let conflicts=read(&root.join("_global/merge_conflicts.yaml")).unwrap_or_else(||yaml(include_bytes!("../../../../../../web/apps/server/src/data/assistant-domain/_global/merge_conflicts.yaml")).unwrap_or_default());
     json!({"catalog":catalog,"default_catalog":shipped_catalog,"sources":sources,"merge_conflicts":conflicts})
+}
+
+pub(crate) fn infer_stack_preset(data: &Path, base: &str, addons: &[&str]) -> Option<String> {
+    use serde::Deserialize;
+    use std::collections::BTreeMap;
+
+    #[derive(Deserialize)]
+    struct Base {
+        source_name: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Preset {
+        base: Option<String>,
+        #[serde(default)]
+        addon_sources: Vec<String>,
+    }
+    let catalog = installed_catalog(data).unwrap_or_else(shipped_catalog);
+    let bases: BTreeMap<String, Base> =
+        serde_json::from_value(catalog.get("bases")?.clone()).ok()?;
+    let (base_id, _) = bases
+        .iter()
+        .find(|(_, entry)| entry.source_name.as_deref() == Some(base))?;
+    let presets: BTreeMap<String, Preset> =
+        serde_json::from_value(catalog.get("stack_presets")?.clone()).ok()?;
+    let mut best = None;
+    let mut best_score = 0;
+    for (id, preset) in presets {
+        if preset.base.as_ref() != Some(base_id) {
+            continue;
+        }
+        let wanted = &preset.addon_sources;
+        let matches = wanted
+            .iter()
+            .filter(|name| addons.contains(&name.as_str()))
+            .count() as i64;
+        let extras = addons
+            .iter()
+            .filter(|addon| !wanted.iter().any(|name| name == **addon))
+            .count() as i64;
+        let score = 3 * matches - wanted.len() as i64 - extras;
+        if score > best_score {
+            best = Some(id);
+            best_score = score;
+        }
+    }
+    best
 }

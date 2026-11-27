@@ -9,7 +9,7 @@
 mod support_installation;
 
 use pp_storage::{Limits, WriterOwner, ownership_marker::WriterGate, restore::CONFIRMATION};
-use pp_testkit::{Installation, restore_fixture::table_rows};
+use pp_testkit::{Fixture, Installation, restore_fixture::table_rows};
 use reqwest::Method;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
@@ -238,5 +238,85 @@ async fn a_downloaded_backup_restores_ids_drafts_history_and_files() {
     // A stage is used once.
     let (status, body) = restore(&server, confirmed).await;
     assert_eq!((status, &body["code"]), (404, &json!("restore_not_found")));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn legacy_assistant_chat_and_feedback_round_trip_without_http_routes() {
+    let node = Installation::create(Fixture::NodeSchema34).unwrap();
+    let legacy = [
+        (
+            "assistant_chat_history",
+            " [\n  {\"id\": \"chat-1\", \"role\": \"user\", \"content\": \"archival-only café\", \"created_at\": \"2026-11-01T12:00:00Z\"}\n]\n",
+        ),
+        (
+            "assistant_feedback",
+            r#" [ { "id": "feedback-1", "rating": "up", "message_excerpt": "archival-only caf\u00e9", "created_at": "2026-11-01T12:01:00Z" } ] "#,
+        ),
+    ];
+    {
+        let db = Connection::open(node.database_path()).unwrap();
+        for (key, value) in legacy {
+            db.execute(
+                "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', ?1, ?2)",
+                (key, value),
+            )
+            .unwrap();
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().canonicalize().unwrap().join("imported");
+    pp_storage::import::import(node.path(), &data).unwrap();
+    let database = data.join(pp_testkit::DATABASE_FILE);
+    let assert_archived = || {
+        let db = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        for (key, value) in legacy {
+            let bytes: Vec<u8> = db
+                .query_row(
+                    "SELECT CAST(value AS BLOB) FROM app_settings WHERE tenant_id = 'default' AND key = ?1",
+                    [key],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(bytes, value.as_bytes(), "{key}");
+        }
+    };
+    assert_archived();
+
+    let (owner, _) =
+        WriterOwner::open_with_gate(&data, Limits::default(), WriterGate::SwitchOn).unwrap();
+    let server = Server::start(owner, data, root, Some("1")).await;
+    let archive = downloaded_backup(&server).await;
+    let removed = Connection::open(&database)
+        .unwrap()
+        .execute(
+            "DELETE FROM app_settings WHERE tenant_id = 'default' AND key IN (?1, ?2)",
+            (legacy[0].0, legacy[1].0),
+        )
+        .unwrap();
+    assert_eq!(removed, legacy.len());
+    let (status, preview) = stage(&server, archive).await;
+    assert_eq!(status, 200, "{preview}");
+    let (status, outcome) = restore(
+        &server,
+        json!({"restore_id": preview["restore_id"], "confirmation": CONFIRMATION}),
+    )
+    .await;
+    assert_eq!(status, 200, "{outcome}");
+    assert_archived();
+
+    assert_eq!(server.json(Method::GET, "/api/v2/plans").await.0, 200);
+    for prefix in ["", "/api/v1", "/api/v2"] {
+        for (method, path) in [
+            (Method::GET, "/assistant/history"),
+            (Method::GET, "/assistant/feedback"),
+            (Method::POST, "/assistant/domain/import"),
+        ] {
+            let path = format!("{prefix}{path}");
+            let (status, response) = server.exchange(method, &path).await;
+            assert_eq!(status, 404, "{path}");
+            assert!(!response.text().await.unwrap().contains("archival-only"));
+        }
+    }
     server.stop().await;
 }

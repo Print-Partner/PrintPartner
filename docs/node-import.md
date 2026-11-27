@@ -313,6 +313,11 @@ No Rust code reads these. The import keeps them byte for byte, also for features
 - Tables: `board_posts`, `plan_shares`, `printer_telemetry`, `slicer_instances`.
 - Settings: `filename_grouping:{build}`, `manifest_v2_{id}`, `integration_webhooks_v1`, `printer.print_outcomes`, `assistant_feedback`, `assistant_chat_history`, `assistant_daily_usage`. Rust's export job has a `filename_grouping` field of its own and does not read the setting.
 
+Legacy assistant chat and feedback stay in the imported database for private
+archival. Rust installation backup and restore preserve both setting values
+byte for byte. Rust does not expose them through HTTP, MCP or the UI. This does
+not change Build decision history or add the old bulk domain-pack endpoint.
+
 The private Rust Board displays only new local Build notes. Imported
 `board_posts` remain intact and undisplayed; GRE-1992 tracks conversion where
 an imported post's Build link can be established.

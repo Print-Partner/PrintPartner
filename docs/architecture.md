@@ -259,6 +259,11 @@ use the same operation interface. A transport must not repeat its policy.
 | Assistant and old API aggregators | AI uses authenticated MCP over the same operations; assistant HTTP routes are not a separate policy engine. Rust routers replace v1/v2 aggregators |
 | Community board, hosted/tenant/Postgres modes | No target owner; excluded from this single-user product |
 
+Rust keeps assistant decisions in Build History. Node chat and feedback remain
+private archival data in imports and installation backups; no HTTP, MCP or UI
+surface serves them. There is no in-app conversation UI or bulk domain-pack
+endpoint in Rust.
+
 One runtime owns the complete operation, including routes, workers, tables, and
 files. Within Rust, only storage writes SQL. `pp-source` owns staged immutable
 Source bytes, not catalog activation. File-producing workers stage and validate

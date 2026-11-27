@@ -12,10 +12,7 @@ use crate::loopback::PresentedCredential;
 use pp_services::mcp_domain::{DomainPort, FarmAccess, ProposedAction, ToolInvocation};
 use pp_storage::checkoff_progress::{Body, ProgressClient, Request, Response};
 use serde_json::{Map, Value, json};
-use std::{
-    sync::{Mutex, PoisonError, atomic::AtomicBool},
-    time::Duration,
-};
+use std::{sync::atomic::AtomicBool, time::Duration};
 
 pub(super) const VERIFY: &str = "propose_verify_printer_checkoff";
 /// Prefix of the burst idempotency key a confirmed proposal applies under.
@@ -34,9 +31,7 @@ pub(super) struct CheckoffDomain {
     pub(super) builds: pp_storage::build_graph::BuildGraphClient,
     pub(super) drafts: pp_storage::working_drafts::WorkingDraftClient,
     pub(super) farm: super::McpFarm,
-    /// The API key of the tool call in progress. `ProductMcp` sets it around
-    /// each call and runs one call per session at a time.
-    caller: Mutex<Option<PresentedCredential>>,
+    caller: Option<PresentedCredential>,
 }
 
 impl CheckoffDomain {
@@ -46,6 +41,7 @@ impl CheckoffDomain {
         drafts: pp_storage::working_drafts::WorkingDraftClient,
         farm: super::McpFarm,
         wait: Duration,
+        caller: Option<PresentedCredential>,
     ) -> Self {
         Self {
             progress,
@@ -53,29 +49,18 @@ impl CheckoffDomain {
             drafts,
             farm,
             wait,
-            caller: Mutex::new(None),
+            caller,
         }
-    }
-
-    pub(super) fn set_caller(&self, caller: Option<PresentedCredential>) {
-        *self.caller.lock().unwrap_or_else(PoisonError::into_inner) = caller;
     }
 
     pub(super) fn caller(&self) -> Result<PresentedCredential, String> {
         self.caller
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .ok_or_else(|| "MCP request has no resolved API key".into())
     }
 
     fn run(&self, request: Request) -> Result<Response, String> {
-        let caller = self
-            .caller
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .ok_or("MCP request has no resolved API key")?;
+        let caller = self.caller()?;
         self.progress
             .apply(
                 caller.into_credential(),
@@ -215,7 +200,7 @@ impl DomainPort for CheckoffDomain {
             Response {
                 status,
                 body: Body::Failure { detail, .. },
-            } => json!({ "ok": false, "status": status, "detail": detail }),
+            } if status < 500 => json!({ "ok": false, "status": status, "detail": detail }),
             _ => return Err(UNAVAILABLE.into()),
         })
     }

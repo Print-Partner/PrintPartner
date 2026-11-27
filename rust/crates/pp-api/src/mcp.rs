@@ -38,7 +38,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use checkoff::CheckoffDomain;
-use pp_services::mcp_domain::{McpSession, ToolResult, server_info};
+use pp_services::mcp_domain::{McpTools, ToolResult, server_info};
 use pp_storage::build_graph::{BuildGraphClient, PositiveId};
 use pp_storage::checkoff_progress::ProgressClient;
 use pp_storage::read_model::farm::FarmClient;
@@ -553,63 +553,34 @@ fn failure(status: StatusCode, detail: &str) -> Response {
     (status, Json(json!({ "detail": detail }))).into_response()
 }
 
-/// One MCP session: its own pending proposals, product tools from the catalog.
-/// `turn` runs one session tool call at a time, so the caller's key set on
-/// the domain belongs to the call that uses it. The blocking task holds it, so
-/// a call whose request was cancelled still finishes before the next starts.
+/// Session handler. Each tool call uses its own credential; proposals belong
+/// to the installation's queue, not to this handler.
+#[derive(Clone)]
 struct ProductMcp {
-    session: Arc<McpSession<CheckoffDomain>>,
-    turn: Arc<tokio::sync::Mutex<()>>,
     reads: Reads,
 }
 
 impl ProductMcp {
     fn new(reads: Reads) -> Self {
-        Self {
-            session: Arc::new(McpSession::new(
-                CheckoffDomain::new(
-                    reads.progress.clone(),
-                    reads.builds.clone(),
-                    reads.drafts.clone(),
-                    reads.farm.clone(),
-                    reads.wait,
-                ),
-                None,
-            )),
-            turn: Arc::new(tokio::sync::Mutex::new(())),
-            reads,
-        }
+        Self { reads }
     }
 
-    /// A catalog or session tool, on a blocking thread with the caller's key.
-    async fn session_tool(
-        &self,
-        name: String,
-        arguments: Value,
-        presented: Option<PresentedCredential>,
-    ) -> Result<ToolResult, ErrorData> {
-        self.in_session(presented, move |session| {
-            session.call_tool(&name, &arguments)
-        })
-        .await?
-        .map_err(|error| internal(error.0))
-    }
-
-    /// Runs `work` on the session, on a blocking thread, with the caller's
-    /// key set on the domain for its duration.
-    async fn in_session<T: Send + 'static>(
+    async fn in_tools<T: Send + 'static>(
         &self,
         presented: Option<PresentedCredential>,
-        work: impl FnOnce(&McpSession<CheckoffDomain>) -> T + Send + 'static,
+        work: impl FnOnce(&McpTools<CheckoffDomain>) -> T + Send + 'static,
     ) -> Result<T, ErrorData> {
-        let turn = self.turn.clone().lock_owned().await;
-        let session = self.session.clone();
+        let Reads {
+            progress,
+            builds,
+            drafts,
+            farm,
+            wait,
+            ..
+        } = self.reads.clone();
         tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            session.port().set_caller(presented);
-            let result = work(&session);
-            session.port().set_caller(None);
-            result
+            let domain = CheckoffDomain::new(progress, builds, drafts, farm, wait, presented);
+            work(&McpTools::new(domain, None))
         })
         .await
         .map_err(internal)
@@ -700,11 +671,19 @@ impl ServerHandler for ProductMcp {
             .and_then(|parts| parts.extensions.get::<PresentedCredential>())
             .cloned();
         let mut tools = self
-            .in_session(presented, |session| session.list_tools())
+            .in_tools(presented, |tools| tools.list_tools())
             .await?
             .map_err(|error| internal(error.0))?;
         plan_history::describe_revision_selector(&mut tools);
-        serde_json::from_value(tools).map_err(internal)
+        let mut tools: ListToolsResult = serde_json::from_value(tools).map_err(internal)?;
+        if let Some(list) = tools
+            .tools
+            .iter_mut()
+            .find(|tool| tool.name == "list_pending_actions")
+        {
+            list.description = Some("List the installation's open proposals, including proposals from other authenticated sessions.".into());
+        }
+        Ok(tools)
     }
 
     async fn call_tool(
@@ -721,50 +700,43 @@ impl ServerHandler for ProductMcp {
         let arguments = request.arguments.map(Value::Object).unwrap_or(Value::Null);
         let presented = parts
             .and_then(|parts| parts.extensions.get::<PresentedCredential>())
-            .cloned();
-        let confirming = (request.name == "confirm_apply")
-            .then(|| arguments.get("action_id").and_then(Value::as_str))
-            .flatten()
-            .and_then(|id| self.session.pending(id))
-            .filter(|action| action.action_type == plan_accept::PROPOSE);
-        let result = match presented {
-            Some(presented) if request.name == "get_build_workflow" => {
-                self.build_workflow(&arguments, presented).await
-            }
-            Some(presented) if planning_reads::TOOLS.contains(&request.name.as_ref()) => {
+            .cloned()
+            .ok_or_else(|| internal("MCP request has no credential"))?;
+        let peer = context.peer.peer_info();
+        let staged_by = pp_storage::pending_actions::StagedBy::label(
+            peer.as_ref()
+                .map(|info| info.client_info.name.as_str())
+                .unwrap_or_default(),
+        );
+        let result = match request.name.as_ref() {
+            "get_build_workflow" => self.build_workflow(&arguments, presented).await,
+            name if planning_reads::TOOLS.contains(&name) => {
                 self.planning_read(&request.name, &arguments, presented)
                     .await
             }
-            Some(presented) if plan_history::TOOLS.contains(&request.name.as_ref()) => {
+            name if plan_history::TOOLS.contains(&name) => {
                 self.plan_history_tool(&request.name, &arguments, presented)
                     .await
             }
-            Some(presented) if reads::TOOLS.contains(&request.name.as_ref()) => {
+            name if reads::TOOLS.contains(&name) => {
                 self.read_tool(&request.name, &arguments, presented).await
             }
-            Some(presented) if progress_reads::TOOLS.contains(&request.name.as_ref()) => {
+            name if progress_reads::TOOLS.contains(&name) => {
                 self.progress_tool(&request.name, &arguments, presented)
                     .await
             }
-            Some(presented) if request.name == plan_accept::PROPOSE => {
-                self.propose_accept(&arguments, presented).await
-            }
-            Some(presented) if confirming.is_some() => {
+            plan_accept::PROPOSE => self.propose_accept(&arguments, presented, staged_by).await,
+            "confirm_apply" => {
                 #[cfg(test)]
                 if let Some(gate) = &self.reads.confirm_gate {
                     gate.watch(context.ct.clone().cancelled_owned());
                 }
-                // Taken before Accept so a concurrent confirm cannot apply it twice.
-                match confirming.and_then(|action| self.session.take_pending(&action.id)) {
-                    Some(action) => self.confirm_accept(action, presented).await,
-                    None => {
-                        self.session_tool(request.name.to_string(), arguments, Some(presented))
-                            .await?
-                    }
-                }
+                self.confirm_proposal(arguments, presented).await
             }
-            presented => {
-                self.session_tool(request.name.to_string(), arguments, presented)
+            "list_pending_actions" => self.list_proposals(presented).await,
+            "dismiss_proposed_action" => self.dismiss_proposal(arguments, presented).await,
+            _ => {
+                self.product_tool(request.name.to_string(), arguments, presented, staged_by)
                     .await?
             }
         };
@@ -783,6 +755,8 @@ mod draft_parts;
 mod farm_status;
 #[path = "mcp/import_inputs.rs"]
 mod import_inputs;
+#[path = "mcp/pending_actions.rs"]
+mod pending_actions;
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
 #[path = "mcp/plan_history.rs"]

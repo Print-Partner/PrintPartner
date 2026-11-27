@@ -2,12 +2,8 @@
 //!
 //! Ports `web/apps/server/src/mcp/product-mcp.ts`. Mutating tools only
 //! propose; `confirm_apply` and `dismiss_proposed_action` settle a proposal.
-//! Each [`McpSession`] owns its pending actions, like one stdio process or one
-//! streamable-HTTP session in Node.
-//!
-//! Nothing routes here yet. The gateway answers `/api/v1/mcp` as disabled
-//! until every tool has a Rust port, then all MCP routes switch at once.
-//! Tools without a Rust port go through [`DomainPort`].
+//! The Rust HTTP adapter owns the durable proposal lifecycle. [`McpSession`]
+//! models Node's session-local behavior for parity tests.
 //!
 //! The catalog (`mcp_domain/catalog.json`) is exported from the live Node
 //! server by `web/apps/server/scripts/export-mcp-catalog.ts`; the Node test
@@ -232,9 +228,7 @@ impl ToolResult {
 
 /// One MCP client's state: its pending proposals and the ports it calls.
 pub struct McpSession<P: DomainPort> {
-    port: P,
-    /// Where `custom_filaments.json` lives; `None` makes that apply fail.
-    data_dir: Option<PathBuf>,
+    tools: McpTools<P>,
     /// Insertion-ordered like a JS `Map`; a restored entry moves to the end.
     pending: Mutex<Vec<ProposedAction>>,
 }
@@ -242,14 +236,13 @@ pub struct McpSession<P: DomainPort> {
 impl<P: DomainPort> McpSession<P> {
     pub fn new(port: P, data_dir: Option<PathBuf>) -> Self {
         Self {
-            port,
-            data_dir,
+            tools: McpTools::new(port, data_dir),
             pending: Mutex::new(Vec::new()),
         }
     }
 
     pub fn port(&self) -> &P {
-        &self.port
+        self.tools.port()
     }
 
     pub fn pending_ids(&self) -> Vec<String> {
@@ -258,11 +251,6 @@ impl<P: DomainPort> McpSession<P> {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<ProposedAction>> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// A copy of the pending action `id`, left pending.
-    pub fn pending(&self, id: &str) -> Option<ProposedAction> {
-        self.lock().iter().find(|a| a.id == id).cloned()
     }
 
     /// Stores `action` as pending, replacing one with the same id.
@@ -281,31 +269,17 @@ impl<P: DomainPort> McpSession<P> {
         Some(pending.remove(index))
     }
 
-    fn assert_enabled(&self) -> Result<(), McpError> {
-        if self.port.enabled() {
-            Ok(())
-        } else {
-            Err(McpError(ACCESS_OFF.into()))
-        }
-    }
-
     pub fn list_tools(&self) -> Result<Value, McpError> {
-        self.assert_enabled()?;
-        let farm_listed = self.port.farm_access() == FarmAccess::Allowed;
-        let tools: Vec<&Value> = catalog_array("tools")
-            .iter()
-            .filter(|tool| farm_listed || !FARM_TOOLS.contains(&tool_name(tool)))
-            .collect();
-        Ok(json!({ "tools": tools }))
+        self.tools.list_tools()
     }
 
     pub fn list_prompts(&self) -> Result<Value, McpError> {
-        self.assert_enabled()?;
+        self.tools.assert_enabled()?;
         Ok(json!({ "prompts": catalog()["prompts"] }))
     }
 
     pub fn get_prompt(&self, name: &str, args: &Map<String, Value>) -> Result<Value, McpError> {
-        self.assert_enabled()?;
+        self.tools.assert_enabled()?;
         if name != "plan_build" {
             return Err(McpError(format!("Unknown prompt: {name}")));
         }
@@ -324,18 +298,18 @@ impl<P: DomainPort> McpSession<P> {
     }
 
     pub fn list_resources(&self) -> Result<Value, McpError> {
-        self.assert_enabled()?;
+        self.tools.assert_enabled()?;
         Ok(json!({ "resources": catalog()["resources"] }))
     }
 
     pub fn list_resource_templates(&self) -> Result<Value, McpError> {
-        self.assert_enabled()?;
+        self.tools.assert_enabled()?;
         Ok(json!({ "resourceTemplates": catalog()["resource_templates"] }))
     }
 
     /// `tools/call`. Non-object arguments count as `{}`.
     pub fn call_tool(&self, name: &str, arguments: &Value) -> Result<ToolResult, McpError> {
-        self.assert_enabled()?;
+        self.tools.assert_enabled()?;
         let empty = Map::new();
         let args = arguments.as_object().unwrap_or(&empty);
         Ok(match self.dispatch(name, args) {
@@ -358,7 +332,13 @@ impl<P: DomainPort> McpSession<P> {
                 ))
             }
             "confirm_apply" => self.confirm_apply(args),
-            _ => self.invoke_product_tool(name, args),
+            _ => {
+                let (result, action) = self.tools.invoke(name, &Value::Object(args.clone()));
+                if let Some(action) = action {
+                    self.set_pending(action);
+                }
+                Ok(result)
+            }
         }
     }
 
@@ -366,7 +346,7 @@ impl<P: DomainPort> McpSession<P> {
         let id = js_string_or_empty(args.get("action_id"));
         // Taken before apply so a concurrent confirm cannot apply it twice.
         let Some(action) = self.take_pending(&id) else {
-            if let Some(result) = self.port.reconcile(&id)? {
+            if let Some(result) = self.port().reconcile(&id)? {
                 let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
                 return Ok(ToolResult {
                     text: pretty(&result),
@@ -383,30 +363,9 @@ impl<P: DomainPort> McpSession<P> {
                 json!({ "ok": false, "error": "UI actions cannot be applied via MCP" }),
             ));
         }
-        let mut to_apply = action.clone();
-        if let Some(Value::Array(excludes)) = args.get("suggested_excludes") {
-            let excludes: Vec<Value> = excludes
-                .iter()
-                .map(|x| js_trim(&js_string(x)).to_owned())
-                .filter(|x| !x.is_empty())
-                .map(Value::String)
-                .collect();
-            to_apply
-                .params
-                .insert("suggested_excludes".into(), Value::Array(excludes));
-        }
-        let applied = match to_apply.action_type.as_str() {
-            "propose_add_custom_filament" => Ok(custom_filaments::apply(
-                self.data_dir.as_deref(),
-                &to_apply.params,
-            )),
-            _ => self.port.apply_action(&to_apply),
-        };
-        match applied {
+        match self.tools.apply(&action, &Value::Object(args.clone())) {
             Ok(result) => {
                 let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
-                // Restored so the client can retry or dismiss, unless the write may
-                // already have committed: a retry could then apply it twice.
                 if !ok && result.get("outcome_unknown") != Some(&Value::Bool(true)) {
                     self.set_pending(action);
                 }
@@ -421,39 +380,100 @@ impl<P: DomainPort> McpSession<P> {
             }
         }
     }
+}
 
-    fn invoke_product_tool(
-        &self,
-        name: &str,
-        args: &Map<String, Value>,
-    ) -> Result<ToolResult, String> {
+/// Product dispatch without proposal storage or decisions.
+pub struct McpTools<P: DomainPort> {
+    port: P,
+    data_dir: Option<PathBuf>,
+}
+
+impl<P: DomainPort> McpTools<P> {
+    pub fn new(port: P, data_dir: Option<PathBuf>) -> Self {
+        Self { port, data_dir }
+    }
+
+    pub fn port(&self) -> &P {
+        &self.port
+    }
+
+    fn assert_enabled(&self) -> Result<(), McpError> {
+        if self.port.enabled() {
+            Ok(())
+        } else {
+            Err(McpError(ACCESS_OFF.into()))
+        }
+    }
+
+    pub fn list_tools(&self) -> Result<Value, McpError> {
+        self.assert_enabled()?;
+        let farm_listed = self.port.farm_access() == FarmAccess::Allowed;
+        let tools: Vec<&Value> = catalog_array("tools")
+            .iter()
+            .filter(|tool| farm_listed || !FARM_TOOLS.contains(&tool_name(tool)))
+            .collect();
+        Ok(json!({ "tools": tools }))
+    }
+
+    pub fn apply(&self, action: &ProposedAction, args: &Value) -> Result<Value, String> {
+        let mut to_apply = action.clone();
+        if let Some(Value::Array(excludes)) = args.get("suggested_excludes") {
+            let excludes: Vec<Value> = excludes
+                .iter()
+                .map(|x| js_trim(&js_string(x)).to_owned())
+                .filter(|x| !x.is_empty())
+                .map(Value::String)
+                .collect();
+            to_apply
+                .params
+                .insert("suggested_excludes".into(), Value::Array(excludes));
+        }
+        match to_apply.action_type.as_str() {
+            "propose_add_custom_filament" => Ok(custom_filaments::apply(
+                self.data_dir.as_deref(),
+                &to_apply.params,
+            )),
+            _ => self.port.apply_action(&to_apply),
+        }
+    }
+
+    pub fn invoke(&self, name: &str, args: &Value) -> (ToolResult, Option<ProposedAction>) {
+        let empty = Map::new();
+        let args = args.as_object().unwrap_or(&empty);
         if !is_product_tool(name) {
-            return Ok(ToolResult::error(
-                json!({ "error": format!("Unknown tool: {name}") }),
-            ));
+            return (
+                ToolResult::error(json!({ "error": format!("Unknown tool: {name}") })),
+                None,
+            );
         }
         if FARM_TOOLS.contains(&name)
             && let FarmAccess::Denied { code, error } = self.port.farm_access()
         {
-            return Ok(ToolResult::error(json!({ "error": error, "code": code })));
+            return (
+                ToolResult::error(json!({ "error": error, "code": code })),
+                None,
+            );
         }
         let invocation = match name {
             "propose_add_custom_filament" => custom_filaments::propose(args),
-            _ => self.port.invoke_tool(name, args)?,
+            _ => match self.port.invoke_tool(name, args) {
+                Ok(invocation) => invocation,
+                Err(error) => return (ToolResult::error(json!({ "error": error })), None),
+            },
         };
-        if let Some(action) = invocation.proposed_action
-            && !UI_ACTION_TYPES.contains(&action.action_type.as_str())
-        {
-            self.set_pending(action);
-        }
         let returned_error = serde_json::from_str::<Value>(&invocation.content)
             .ok()
             .and_then(|v| v.as_object().map(|o| o.contains_key("error")))
             .unwrap_or(false);
-        Ok(ToolResult {
-            text: invocation.content,
-            is_error: returned_error,
-        })
+        (
+            ToolResult {
+                text: invocation.content,
+                is_error: returned_error,
+            },
+            invocation
+                .proposed_action
+                .filter(|action| !UI_ACTION_TYPES.contains(&action.action_type.as_str())),
+        )
     }
 }
 

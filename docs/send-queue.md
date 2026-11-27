@@ -10,6 +10,75 @@ storage writes come first below; the send routes and the upload worker that
 sends to printers (GRE-365) follow in [Routes](#routes-gre-365) and
 [Upload worker](#upload-worker-gre-365-gre-1215).
 
+## Route and worker transition receipt (GRE-2000)
+
+The [whole-runtime cutover](adr/0010-whole-runtime-cutover.md) moves the
+queue and upload worker together onto a separate Rust-owned copy. Node
+still owns production. The receipt below exercises the replacement
+runtime, not the old mixed-runtime worker fence. It does not change
+ownership, the rebuild gate, or either runtime's disk format.
+
+### Compatibility boundary
+
+The [ownership manifest](../rust/crates/pp-gateway/ownership-manifest.json)
+groups these Node handlers with `job.printer-upload`, startup
+reconciliation, missing-job reconciliation, shutdown interruption and
+the legacy self-host exports migration. The queue prefix in the table
+stands for both `/printer-send-queue` and
+`/api/v1/printer-send-queue`.
+
+| Node route or job | Rust-only boundary |
+| --- | --- |
+| `GET` and `POST` at the queue prefix | Read and stage with `GET` and `POST /api/v2/printer-send-queue`. Staging does not enqueue an upload. |
+| `POST {queue}/{id}/dispatch`, `POST {queue}/drain` | Send now and Send ready at the corresponding `/api/v2` routes each claim a queue row and create its durable upload job. |
+| `DELETE {queue}/{id}` | Remove at the corresponding `/api/v2` route cancels a queued item, not an acknowledged send. |
+| `POST /jobs/printer-upload`, `POST /api/v1/jobs/printer-upload` | No replacement direct-write alias. Stage first, then take an explicit queue send action. |
+| `job.printer-upload` and reconciliation participants | The Rust-only launcher starts one `SendWorker`. Unknown effects require reconciliation by the exact upload job ID; they do not run again. |
+
+The legacy paths are not mounted by the Rust-only product. An authenticated
+request to one cannot enqueue, claim, or cancel work, and is not proxied
+to Node. This is not a claim that an unchanged Node client works against
+Rust. The Farm and Production UI use the Rust route family.
+
+### What the fixture checks
+
+The receipt starts the Rust-only launcher with the same disposable
+directory on three successive opens and points its unused Node path at
+a nonexistent executable. All printer hosts in the fixture are loopback
+simulators. It sends an identical multipart upload to the legacy Add
+and direct upload paths and probes the legacy read, dispatch, drain and
+delete routes with a real staged item ID. The Rust queue and job list
+stay identical before and after every batch of legacy requests.
+
+- Add and Remove create no upload job and make no effect request. A
+  cancelled queue item is not picked up by a later drain. A
+  printer-filtered drain claims only the eligible item for that printer,
+  creates a `printer-upload` job, and sends exactly one upload-only
+  request. Cancelling that acknowledged item is refused.
+- Send now for the other item creates the same kind of durable job. The
+  simulator drops the reply, so the queue and its job keep the unknown
+  outcome across restart. Send now refuses redispatch and Send ready
+  creates no work. Neither path repeats the upload.
+- Rust refuses reconciliation using the other item's job ID. An answer
+  using the correct ID records the user's report that it printed and
+  keeps the queue item and job across another restart, without making up
+  a printer confirmation or result. Repeating the answer is refused;
+  the simulators record only the original two uploads, with no start.
+
+Run the receipt and the neighboring Moonraker and PrusaLink launcher
+tests with:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --features desktop_rebuild --test runtime_m0 --no-tests=fail \
+  -E 'test(send_queue::)'
+```
+
+[GRE-1999](https://linear.app/greetz/issue/GRE-1999) tracks the remaining
+transition evidence, including the wider startup, shutdown and
+compatibility decision for the old aliases. This fixture does not
+rehearse the data import or grant approval to switch production.
+
 ## Schema 44
 
 The 43 to 44 step installs the table and its index from

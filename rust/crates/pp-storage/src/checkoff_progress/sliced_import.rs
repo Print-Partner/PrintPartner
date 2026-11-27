@@ -179,7 +179,7 @@ impl ProgressClient {
                         .collect(),
                     units: vec![],
                     mappings: None,
-                    retain_unmatched: true,
+                    retain_unmatched: false,
                     completed: true,
                     snapshot_source: None,
                     link: AssignedLink {

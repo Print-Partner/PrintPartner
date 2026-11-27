@@ -97,7 +97,7 @@ MCP confirmation or the Apply panel records one manual Checkoff burst under `mcp
 
 `propose_import_3mf_checkoff` previews a sliced 3MF against the current Accepted Plan. Pass `plan_id` and either `content_base64` with an optional `filename`, or `source_id` and `path` for a 3MF in that Source's current synchronized revision. The package and its model each have a 64 MiB cap; use a Source if the base64 request exceeds MCP's 4 MiB request cap. Rust reads local mesh objects in build order and refuses unsupported component layouts or stale Required-unit tokens rather than guessing.
 
-Confirmation rechecks the Accepted Plan and reviewed mapping, then creates one `awaiting_verify` link. Import changes no progress, stores no package bytes, and calls no printer. Review or correct the mapping in Checkoff; only a separate verification can record progress and return an Undo token.
+Confirmation rechecks the Accepted Plan and reviewed mapping, then creates one `awaiting_verify` link. Unmatched names are visible in the preview but do not require verification. Import changes no progress, stores no package bytes, and calls no printer. Only a separate verification can record progress and return an Undo token.
 
 ### `propose_create_build`
 

@@ -264,7 +264,7 @@ async fn mcp_sliced_import_previews_reconciles_and_uses_normal_verify_and_undo()
         &headers,
         IMPORT,
         json!({
-            "plan_id":1, "filename":"sliced", "content_base64":inline(&[token]),
+            "plan_id":1, "filename":"sliced", "content_base64":inline(&[token, ""]),
         }),
     )
     .await;
@@ -278,6 +278,10 @@ async fn mcp_sliced_import_previews_reconciles_and_uses_normal_verify_and_undo()
         "Slicer object 0"
     );
     assert!(proposal["action"]["params"].get("content_base64").is_none());
+    assert_eq!(
+        proposal["attribution"]["unmatchedObjectNames"],
+        json!(["Slicer object 1"])
+    );
     assert_eq!(read(&server, &headers).await, before);
     let (applied, failed) = confirm(&server, &headers, &proposal).await;
     assert!(!failed, "{applied}");
@@ -304,6 +308,9 @@ async fn mcp_sliced_import_previews_reconciles_and_uses_normal_verify_and_undo()
     assert!(!failed, "{verify}");
     let (receipt, failed) = confirm(&server, &headers, &verify).await;
     assert!(!failed, "{receipt}");
+    let (reconciled, failed) = confirm(&server, &headers, &proposal).await;
+    assert!(!failed, "{reconciled}");
+    assert_eq!(reconciled["result"]["link"]["state"], "verified");
     let verified = read(&server, &headers).await;
     assert_eq!(verified["accepted_basis"], before["accepted_basis"]);
     assert_eq!(

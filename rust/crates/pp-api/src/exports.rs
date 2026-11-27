@@ -3,6 +3,7 @@
 //! (GRE-1525, [`pack`]) a ZIP of the STLs. [`managed`] exports the accepted
 //! Plates as 3MF. Each uses one reader-pool snapshot. Nothing is stored.
 
+mod direct;
 mod managed;
 mod pack;
 
@@ -26,9 +27,13 @@ use pp_storage::{
     read_model::{AcceptedRead, Artifact, Part, ReadClient, Snapshot, views},
 };
 use serde_json::{Map, json};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 use tokio::sync::Semaphore;
 
@@ -39,7 +44,7 @@ static CHECKLIST_RENDER_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore
 struct App {
     gate: Gate,
     client: ReadClient,
-    managed_render: Arc<Semaphore>,
+    three_mf_render: Arc<Semaphore>,
 }
 
 /// Mounts the export routes under `/api/v2` when `PP_DESKTOP_REBUILD` was
@@ -51,12 +56,13 @@ pub fn exports_router(config: AcceptedHttpConfig, client: ReadClient) -> Router 
     let routes = Router::new()
         .route("/plans/{id}/exports/checklist", get(checklist))
         .route("/plans/{id}/exports/stl-pack", get(pack::stl_pack))
-        .route("/plans/{id}/exports/managed-3mf", get(managed::download));
+        .route("/plans/{id}/exports/managed-3mf", get(managed::download))
+        .route("/plans/{id}/exports/direct-3mf", get(direct::download));
     gate.guard(Router::new().nest("/api/v2", routes))
         .with_state(App {
             gate,
             client,
-            managed_render: Arc::new(Semaphore::new(1)),
+            three_mf_render: Arc::new(Semaphore::new(1)),
         })
 }
 
@@ -197,6 +203,23 @@ async fn accepted_snapshot(
     id: &str,
     request: Request,
 ) -> Result<Box<Snapshot>, ExportFailure> {
+    ready_snapshot(read_accepted(app, id, request, ReadClient::read_plan).await?)
+}
+
+async fn read_accepted<T: Send + 'static>(
+    app: &App,
+    id: &str,
+    request: Request,
+    read: impl FnOnce(
+        &ReadClient,
+        pp_storage::read_model::Credential,
+        Option<i64>,
+        &AtomicBool,
+        Duration,
+    ) -> Result<T, WriterFailure>
+    + Send
+    + 'static,
+) -> Result<T, ExportFailure> {
     let presented = request
         .extensions()
         .get::<PresentedCredential>()
@@ -206,14 +229,22 @@ async fn accepted_snapshot(
         )))?;
     let build = build_id(id).and_then(|id| i64::try_from(id.get()).ok());
     let client = app.client.clone();
-    let read = app
-        .gate
+    app.gate
         .blocking(move |cancelled, wait| {
-            client.read_plan(presented.into_credential(), build, &cancelled, wait)
+            read(
+                &client,
+                presented.into_credential(),
+                build,
+                &cancelled,
+                wait,
+            )
         })
         .await
         .map_err(|_| ExportFailure::Interrupted)?
-        .map_err(ExportFailure::Storage)?;
+        .map_err(ExportFailure::Storage)
+}
+
+fn ready_snapshot(read: AcceptedRead) -> Result<Box<Snapshot>, ExportFailure> {
     match read {
         AcceptedRead::Ready { snapshot } => Ok(snapshot),
         AcceptedRead::Missing => Err(ExportFailure::BuildNotFound),
@@ -223,6 +254,19 @@ async fn accepted_snapshot(
         }
         AcceptedRead::IntegrityFailure { .. } => Err(ExportFailure::AcceptedPlanInconsistent),
     }
+}
+
+fn required_members(plan: &Snapshot) -> HashMap<&str, (&Part, &str)> {
+    plan.parts
+        .iter()
+        .filter(|part| part.included)
+        .flat_map(|part| {
+            part.units
+                .iter()
+                .filter(|unit| unit.required)
+                .map(move |unit| (unit.token.as_str(), (part, unit.object_name.as_str())))
+        })
+        .collect()
 }
 
 /// The checklist input: included Parts, with the quantity and printed count

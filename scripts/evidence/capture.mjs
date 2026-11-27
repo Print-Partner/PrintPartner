@@ -147,8 +147,8 @@ async function main() {
       }
       log(`shot ${path} -> ${file}`);
       if (config.boardFlow && path === "/board") {
-        const { profiles } = await api("GET", "/api/v2/plans");
-        const build = profiles[0];
+        const { builds } = await api("GET", "/api/v2/board/builds");
+        const build = builds[0];
         if (!build) throw new CaptureError("Board evidence needs a synthetic Build");
         await guarded(page.getByRole("button", { name: "Add note" }).click(), "opening the Board form failed");
         await guarded(page.getByRole("combobox", { name: "Build", exact: true }).selectOption(String(build.id)), "choosing the Build failed");

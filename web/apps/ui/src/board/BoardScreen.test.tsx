@@ -32,12 +32,42 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("lets an owner select the 65th Build when the full Build list is refused", async () => {
+  const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === "/api/v2/plans") return Response.json({}, { status: 409 });
+    if (path === "/api/v2/board/builds") {
+      return Response.json({
+        builds: Array.from({ length: 65 }, (_, i) => ({ id: i + 1, name: `Build ${i + 1}` })),
+      });
+    }
+    if (path === "/api/v2/board/notes" && init?.method === "POST") {
+      return Response.json({ ...note, build_id: 65, build_name: "Build 65" });
+    }
+    return Response.json({ notes: [] });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const router = createMemoryRouter(routes, { initialEntries: ["/board"] });
+  render(<App router={router} queryClient={createQueryClient()} />);
+  const add = screen.getByRole<HTMLButtonElement>("button", { name: "Add note" });
+  await waitFor(() => expect(add.disabled).toBe(false));
+  fireEvent.click(add);
+  await screen.findByRole("option", { name: "Build 65" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Build" }), { target: { value: "65" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: note.body } });
+  fireEvent.click(screen.getByRole("button", { name: "Save note" }));
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.find(([, init]) => init?.method === "POST")?.[1]?.body).toBe(
+      JSON.stringify({ build_id: 65, body: note.body }),
+    ),
+  );
+});
+
 it("opens Board from the rail, creates a local note, and links to its Build", async () => {
   let notes: BoardNote[] = [];
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     const reply = (body: unknown) =>
       new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-    if (path === "/api/v2/plans") return reply({ profiles: [build] });
+    if (path === "/api/v2/board/builds") return reply({ builds: [build] });
     if (path === "/api/v2/board/notes") {
       if (init?.method === "POST") {
         notes = [note];

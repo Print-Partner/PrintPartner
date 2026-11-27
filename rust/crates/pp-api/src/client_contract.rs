@@ -71,6 +71,13 @@ pub(crate) const fn route(
 
 pub const CLIENT_ROUTES: &[ClientRoute] = &[
     route(
+        "listBoardBuilds",
+        "GET",
+        "/api/v2/board/builds",
+        None,
+        "BoardBuilds",
+    ),
+    route(
         "listBoardNotes",
         "GET",
         "/api/v2/board/notes",
@@ -748,6 +755,10 @@ pub(crate) mod codegen {
             schemars::schema_for!(ProfileList<ProfileSummary>),
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
+        schema(
+            "BoardBuilds",
+            schemars::schema_for!(crate::builds::board::BoardBuilds),
+        )?;
         schema(
             "BoardFeed",
             schemars::schema_for!(crate::builds::board::BoardFeed),

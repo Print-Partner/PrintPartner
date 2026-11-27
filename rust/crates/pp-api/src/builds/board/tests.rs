@@ -32,6 +32,34 @@ async fn create(app: &Router, cookie: Option<&str>, build: i64, body: &str) -> (
 }
 
 #[tokio::test]
+async fn board_http_lists_owner_choices_beyond_the_plan_summary_cap() {
+    let data = Installation::with_authenticated_fixture().unwrap();
+    Connection::open(data.database_path())
+        .unwrap()
+        .execute_batch(
+            "WITH RECURSIVE ids(n) AS (VALUES(2) UNION ALL SELECT n+1 FROM ids WHERE n < 65)
+             INSERT INTO build_profiles (id, name) SELECT n, printf('Imported %d', n) FROM ids;
+             INSERT INTO build_profiles (tenant_id, name) VALUES ('foreign', 'Hidden');",
+        )
+        .unwrap();
+    let (owner, app) = mount(&data);
+    let path = "/api/v2/board/builds";
+    assert_eq!(loopback::send(&app, "GET", path, None, None).await.0, 401);
+    let (status, body) = loopback::send(&app, "GET", path, None, Some(OWNER)).await;
+    assert_eq!(status, 200, "{body}");
+    let builds = body["builds"].as_array().unwrap();
+    assert_eq!(builds.len(), 65);
+    assert!(builds.contains(&json!({"id": 65, "name": "Imported 65"})));
+    assert!(!builds.iter().any(|build| build["name"] == "Hidden"));
+    assert_eq!(
+        create(&app, Some(OWNER), 65, "Review this Build").await.0,
+        200
+    );
+    drop(app);
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
 async fn board_http_proves_owner_and_keeps_legacy_posts_undisplayed_after_reopen() {
     let data = Installation::with_authenticated_fixture().unwrap();
     let db = Connection::open(data.database_path()).unwrap();

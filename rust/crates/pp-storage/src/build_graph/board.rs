@@ -30,6 +30,11 @@ pub struct Entry {
     pub note: Note,
 }
 
+pub struct BuildChoice {
+    pub id: i64,
+    pub name: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Build not found")]
@@ -58,6 +63,27 @@ impl ReadClient {
 }
 
 impl Client {
+    pub fn builds(
+        &self,
+        credential: Credential,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Vec<BuildChoice>, WriterFailure> {
+        self.storage.read("board.builds", cancelled, wait, |tx| {
+            let tenant = authorize(tx, &credential, self.policy)?;
+            let mut query = tx.prepare(
+                "SELECT id, name FROM build_profiles WHERE tenant_id=?1 ORDER BY name, id",
+            )?;
+            let rows = query.query_map([tenant.id()], |row| {
+                Ok(BuildChoice {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                })
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })?
+    }
+
     pub fn list(
         &self,
         credential: Credential,

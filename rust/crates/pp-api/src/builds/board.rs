@@ -63,6 +63,19 @@ pub(crate) struct BoardFeed {
     notes: Vec<BoardNote>,
 }
 
+#[derive(Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+struct BuildChoice {
+    id: i64,
+    name: String,
+}
+
+#[derive(Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct BoardBuilds {
+    builds: Vec<BuildChoice>,
+}
+
 #[cfg(feature = "codegen")]
 pub(crate) fn fixtures() -> Result<Vec<serde_json::Value>, serde_json::Error> {
     use crate::client_contract::codegen::served;
@@ -89,6 +102,16 @@ pub(crate) fn fixtures() -> Result<Vec<serde_json::Value>, serde_json::Error> {
         )?,
         served("BoardFeed", "empty", BoardFeed { notes: vec![] })?,
         served("CreateBoardNoteRequest", "add-note", request)?,
+        served(
+            "BoardBuilds",
+            "choices",
+            BoardBuilds {
+                builds: vec![BuildChoice {
+                    id: 1,
+                    name: "Enclosure".into(),
+                }],
+            },
+        )?,
     ])
 }
 
@@ -99,9 +122,34 @@ pub fn board_router(config: AcceptedHttpConfig, client: Client) -> Router {
     gate.guard(
         Router::new()
             .route("/api/v2/board/notes", get(list).post(create))
+            .route("/api/v2/board/builds", get(builds))
             .layer(DefaultBodyLimit::max(16 * 1024)),
     )
     .with_state((gate, client))
+}
+
+async fn builds(
+    State((gate, client)): State<(Gate, Client)>,
+    Extension(credential): Extension<PresentedCredential>,
+) -> Response {
+    match gate
+        .blocking(move |cancelled, wait| {
+            client.builds(credential.into_credential(), &cancelled, wait)
+        })
+        .await
+    {
+        Ok(Ok(builds)) => ok_json(&BoardBuilds {
+            builds: builds
+                .into_iter()
+                .map(|build| BuildChoice {
+                    id: build.id,
+                    name: build.name,
+                })
+                .collect(),
+        }),
+        Ok(Err(error)) => problem::writer_failure(&error),
+        Err(_) => internal(),
+    }
 }
 
 async fn list(

@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import { buildsQuery } from "../core/builds";
 import { readCore, writeCore } from "../core/rust";
 import { reason } from "../core/writes";
 import { useConnection } from "../frame/connection";
@@ -13,7 +12,11 @@ const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle
 
 function NoteForm({ close }: { close: () => void }) {
   const connection = useConnection();
-  const builds = useQuery({ ...buildsQuery, enabled: connection !== "offline" });
+  const builds = useQuery({
+    queryKey: ["core", "board-builds"],
+    queryFn: ({ signal }) => readCore("listBoardBuilds", {}, signal),
+    enabled: connection !== "offline",
+  });
   const client = useQueryClient();
   const [build, setBuild] = useState("");
   const [note, setNote] = useState("");
@@ -29,7 +32,7 @@ function NoteForm({ close }: { close: () => void }) {
   const enabled =
     connection === "online" &&
     builds.isSuccess &&
-    builds.data.profiles.some(({ id }) => String(id) === build) &&
+    builds.data.builds.some(({ id }) => String(id) === build) &&
     validBody &&
     !save.isPending;
 
@@ -49,7 +52,7 @@ function NoteForm({ close }: { close: () => void }) {
           required
         >
           <option value="">Choose a Build</option>
-          {builds.data?.profiles.map(({ id, name }) => (
+          {builds.data?.builds.map(({ id, name }) => (
             <option key={id} value={id}>
               {name}
             </option>
@@ -65,7 +68,7 @@ function NoteForm({ close }: { close: () => void }) {
           </button>
         </p>
       )}
-      {builds.data?.profiles.length === 0 && (
+      {builds.data?.builds.length === 0 && (
         <p>
           <Link to="/builds">Create a Build</Link> to add a note.
         </p>

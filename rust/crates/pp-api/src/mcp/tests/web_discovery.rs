@@ -117,7 +117,10 @@ async fn guide_intake_is_bounded_and_keeps_untrusted_provenance_without_writing(
         .unwrap()
     };
     let before_counts = counts();
-    let paste = json!({"text": format!("Printer: Fixture printer\nInstall release `v2.1`\nReplace the spacer with a 2.5 mm spacer. Verify fit.\n{}", "é".repeat(7_000))});
+    let paste = json!({"text": format!(
+        "Printer: Fixture printer\nInstall release `v2.1`\nReplace the spacer with a 2.5 mm spacer. Verify fit.\n**Replace the stock probe.** Verify fit before {}.\n{}",
+        "installing more parts ".repeat(8), "é".repeat(7_000)
+    )});
     assert_needs_key(&server, "ingest_guide_text", paste.clone()).await;
     let (result, refused) = tool(&server, &headers, "ingest_guide_text", paste).await;
     assert!(!refused, "{result}");
@@ -127,7 +130,10 @@ async fn guide_intake_is_bounded_and_keeps_untrusted_provenance_without_writing(
     assert_eq!(result["extract"]["tags_or_refs"], json!(["v2.1"]));
     assert_eq!(
         result["extract"]["replacements"],
-        json!(["Replace the spacer with a 2.5 mm spacer"])
+        json!([
+            "Replace the spacer with a 2.5 mm spacer",
+            "Replace the stock probe"
+        ])
     );
     let readme = json!({"url":"https://docs.example.com/readme"});
     assert_needs_key(&server, "ingest_guide_url", readme.clone()).await;

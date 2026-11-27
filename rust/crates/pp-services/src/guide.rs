@@ -122,7 +122,13 @@ pub fn extract(text: &str, page_links: &[String]) -> Extract {
         {
             let end = line
                 .match_indices(['.', '!', '?'])
-                .find(|(i, _)| line[i + 1..].chars().next().is_none_or(char::is_whitespace))
+                .find(|(i, punctuation)| {
+                    line[i + punctuation.len()..]
+                        .trim_start_matches(['*', '_', '`'])
+                        .chars()
+                        .next()
+                        .is_none_or(char::is_whitespace)
+                })
                 .map_or(line.len(), |(i, _)| i);
             let candidate = &line[..end];
             if candidate.len() <= 140 {

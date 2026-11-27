@@ -28,6 +28,9 @@ const API_KEY: &str = "simulator-api-key-0d5f";
 /// The file Add to queue stages.
 const GCODE: &str = "G28\nG1 X10\n";
 
+#[path = "send_transition.rs"]
+mod transition;
+
 #[tokio::test]
 async fn send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome() {
     let data = super::temporary("send-queue");
@@ -106,6 +109,21 @@ async fn call(origin: &str, cookie: &str, method: &str, path: &str) -> (StatusCo
 /// Add to queue for `printer`: a send of a small G-code file bound to Build
 /// `build`, upload-only unless `start`.
 async fn add(origin: &str, cookie: &str, printer: &str, build: i64, start: bool) -> Value {
+    let response = post_file(origin, cookie, QUEUE, printer, build, start).await;
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["item"].clone()
+}
+
+async fn post_file(
+    origin: &str,
+    cookie: &str,
+    path: &str,
+    printer: &str,
+    build: i64,
+    start: bool,
+) -> reqwest::Response {
     let boundary = "send-queue-proof";
     let mut body = String::new();
     for (name, value) in [
@@ -121,11 +139,12 @@ async fn add(origin: &str, cookie: &str, printer: &str, build: i64, start: bool)
     body.push_str(&format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"plate.gcode\"\r\nContent-Type: application/octet-stream\r\n\r\n{GCODE}\r\n--{boundary}--\r\n"
     ));
-    let response = reqwest::Client::builder()
+    reqwest::Client::builder()
         .no_proxy()
+        .timeout(Duration::from_secs(10))
         .build()
         .unwrap()
-        .post(format!("{origin}{QUEUE}"))
+        .post(format!("{origin}{path}"))
         .header("origin", origin)
         .header("cookie", cookie)
         .header(
@@ -135,11 +154,7 @@ async fn add(origin: &str, cookie: &str, printer: &str, build: i64, start: bool)
         .body(body)
         .send()
         .await
-        .unwrap();
-    let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
-    let body: Value = response.json().await.unwrap();
-    assert_eq!(status, StatusCode::OK, "{body}");
-    body["item"].clone()
+        .unwrap()
 }
 
 /// Send now; the answer's `job_id`.

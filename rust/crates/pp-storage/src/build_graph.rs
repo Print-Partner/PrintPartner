@@ -1,3 +1,4 @@
+pub mod board;
 pub mod manifest_options;
 mod model;
 pub mod wire;
@@ -619,14 +620,15 @@ pub(crate) fn mutation(
             }
             tx.pragma_update(None, "defer_foreign_keys", "ON")?;
             tx.execute(
-                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4,?5,?6)",
+                "DELETE FROM app_settings WHERE tenant_id=?1 AND key IN (?2,?3,?4,?5,?6,?7)",
                 params![
                     tenant,
                     format!("production_setup:{build}"),
                     format!("role_filaments_{build}"),
                     format!("feature_toggles:plan:{build}"),
                     format!("kit_manifest_{build}"),
-                    crate::plan_publication::material::experiment_color_key(build)
+                    crate::plan_publication::material::experiment_color_key(build),
+                    board::key(build),
                 ],
             )?;
             ensure!(

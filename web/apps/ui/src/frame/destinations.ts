@@ -1,5 +1,5 @@
 /**
- * The five destinations from docs/product/ui-ux-target.md (Information architecture).
+ * The destinations from docs/product/ui-ux-target.md (Information architecture).
  * The rail, the `G` shortcuts, the palette and the shortcut list all read this list.
  */
 export interface Destination {
@@ -48,6 +48,13 @@ export const DESTINATIONS: readonly Destination[] = [
     path: "/settings",
     key: ",",
     holds: "modules, integrations, sharing, devices and backups",
+  },
+  {
+    label: "Board",
+    path: "/board",
+    key: "n",
+    holds: "private Build notes with links to their Builds",
+    help: "Read and add private notes linked to your Builds",
   },
 ];
 

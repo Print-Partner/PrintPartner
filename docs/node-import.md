@@ -313,6 +313,10 @@ No Rust code reads these. The import keeps them byte for byte, also for features
 - Tables: `board_posts`, `plan_shares`, `printer_telemetry`, `slicer_instances`.
 - Settings: `filename_grouping:{build}`, `manifest_v2_{id}`, `integration_webhooks_v1`, `printer.print_outcomes`, `assistant_feedback`, `assistant_chat_history`, `assistant_daily_usage`. Rust's export job has a `filename_grouping` field of its own and does not read the setting.
 
+The private Rust Board displays only new local Build notes. Imported
+`board_posts` remain intact and undisplayed; GRE-1992 tracks conversion where
+an imported post's Build link can be established.
+
 ## Installation value and accounts
 
 Node stores every row under a `tenant_id` value. It writes `default` when it runs without accounts or with single-user sign-in, and for the first account otherwise. A later account's id, `basic-<login>` or `anonymous` appear in other setups. The Rust-only runtime maps every session to `default` (`ps/auth/policy.rs`), so it cannot see data under another value, and it refuses to sign in when `users` holds more than one row.

@@ -577,6 +577,7 @@ impl ProductMcp {
     ) -> Result<T, ErrorData> {
         let Reads {
             progress,
+            accepted,
             builds,
             drafts,
             farm,
@@ -584,7 +585,8 @@ impl ProductMcp {
             ..
         } = self.reads.clone();
         tokio::task::spawn_blocking(move || {
-            let domain = CheckoffDomain::new(progress, builds, drafts, farm, wait, presented);
+            let domain =
+                CheckoffDomain::new(progress, accepted, builds, drafts, farm, wait, presented);
             work(&McpTools::new(domain, None))
         })
         .await
@@ -680,6 +682,7 @@ impl ServerHandler for ProductMcp {
             .await?
             .map_err(|error| internal(error.0))?;
         plan_history::describe_inputs(&mut tools);
+        plan_checkoff::describe_inputs(&mut tools);
         let mut tools: ListToolsResult = serde_json::from_value(tools).map_err(internal)?;
         if let Some(list) = tools
             .tools
@@ -779,6 +782,8 @@ pub(crate) use pending_actions::http::{
 };
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
+#[path = "mcp/plan_checkoff.rs"]
+mod plan_checkoff;
 #[path = "mcp/plan_history.rs"]
 mod plan_history;
 #[path = "mcp/planning.rs"]

@@ -12,6 +12,8 @@ mod farm_status;
 mod import_inputs;
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
+#[path = "tests/plan_checkoff.rs"]
+mod plan_checkoff;
 #[path = "tests/plan_history.rs"]
 mod plan_history;
 #[path = "tests/planning.rs"]

@@ -50,6 +50,16 @@ An empty Build has no Accepted revision (`basis.kind: "empty"`). A stale Build c
 
 Rust ignores optional addon documents over 1 MiB. An unparseable data-dir `merge_conflicts.yaml` falls back to the shipped copy. Confirmation writes its decision log in the same transaction as the change. Storage errors answer `Build planning is unavailable`. Rust also refuses confirmation when merging exclusions into a malformed or over-budget stored kit, and when the Source is already attached. Confirmation also refuses when the proposed canonical Source name no longer exists, instead of selecting a similar name. These are Rust-only refusals.
 
+### Accepted Plan Checkoff
+
+- `get_plan_checkoff { plan_id }` returns `state` (`ready` or `empty`), `accepted_basis`, Plan totals and `parts`. Each Part has printed and assembled counts, and each Required unit has its token, zero-based index, and `completed` and `assembled` flags. A Build without an Accepted Plan has no basis or Parts.
+- `propose_set_plan_progress { plan_id, rows, expected? }` stages exact printed counts. Each row is `{ part_id, printed_count }`; name each Part once. Checkoff fills from the lowest index and clears assembly on units marked unprinted.
+- `propose_set_plan_assembly { plan_id, part_id, unit_index, assembled, expected? }` stages one unit's assembly state. An unprinted unit cannot be assembled.
+
+Pass `accepted_basis` as `expected` when proposing with coordinates from a Checkoff read. A mismatch refuses to stage. Every staged proposal pins the current Accepted Plan and Required-unit tokens, and confirmation refuses if the basis changed. Staging does not change Checkoff.
+
+MCP confirmation or the Apply panel records one manual Checkoff burst under `mcp:<action_id>`. MCP returns the burst receipt with `undo_token`; Build History offers the same Undo as the Checkoff tab. Confirming twice does not apply twice, even after Undo. No Plan is published, no printer is contacted, and no stock is changed.
+
 ### `propose_create_build`
 
 `propose_create_build` `{ name, request, urls?, idempotency_key? }` creates a Build together with its Build planning brief (GRE-1441). Each URL in `urls` becomes one evidence item. Rust classifies it the way Node's `classifyBuildUrl` does, and does not guess a role from the request text. No Source is created. The shared catalog's tool description still says the request is verbatim and normalized. Rust trims surrounding whitespace from `request` and stores no separate normalized form. That catalog is exported from Node's tool description (`npm run mcp:catalog -w @print-partner/server`), so regenerating it copies the same sentence until Node's description changes.

@@ -44,6 +44,10 @@ prompt, not a tool.
 | **Missing** | Of the 63 other listed tools, 62 reach the `has no Rust port yet` fallback (for example, `search_source_files` and `get_plan_checkoff`). The remaining tool, `propose_add_custom_filament`, can propose, but the product MCP session gives its confirm handler no data directory. | [Owner re-scope](../architecture.md#current-state-and-transition); listing alone is not a decision to port every tool |
 | **Unverified** | No new tool calls or output comparisons were run. The name/schema comparison is against the checked-in catalogs, not a live discovery or compatibility test. | [GRE-1428](https://linear.app/greetz/issue/GRE-1428) tracks the owner’s daily loop, including Build creation with MCP or the UI |
 
+Since that snapshot, [manual Accepted Plan Checkoff](../mcp.md#accepted-plan-checkoff)
+has a Rust read and two proposal handlers. Sliced 3MF Checkoff import is tracked
+[separately](https://linear.app/greetz/issue/GRE-1985).
+
 ## UI
 
 Compare the Node [sign-in routes](../../web/apps/web/src/App.tsx) and

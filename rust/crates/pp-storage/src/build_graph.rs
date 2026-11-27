@@ -3,6 +3,7 @@ mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 mod experiments;
+pub mod history;
 pub(crate) const SCHEMA_STEP: u64 = 48;
 pub use experiments::{ExperimentBuild, ExperimentCopy};
 pub mod create_with_brief;
@@ -49,6 +50,15 @@ pub enum BudgetResource {
 /// The most Builds one installation lists. `List` refuses more, so `Create`
 /// refuses to make the next one and the Builds list stays readable.
 pub const MAX_BUILDS: usize = 64;
+
+fn at_build_limit(tx: &Transaction<'_>, tenant: &str) -> Result<bool> {
+    let count: i64 = tx.query_row(
+        "SELECT count(*) FROM build_profiles WHERE tenant_id=?1",
+        [tenant],
+        |row| row.get(0),
+    )?;
+    Ok(count >= MAX_BUILDS as i64)
+}
 
 #[derive(Debug)]
 pub enum Failure {
@@ -145,6 +155,7 @@ pub enum BuildOutcome {
         profile: Box<ProfileSummary>,
     },
     Duplicated(ExperimentCopy),
+    ExperimentInputsChanged,
     HasExperiments {
         builds: Vec<ExperimentBuild>,
     },
@@ -428,12 +439,7 @@ pub(crate) fn mutation(
                     name: name.as_str().to_owned(),
                 });
             }
-            let count: i64 = tx.query_row(
-                "SELECT count(*) FROM build_profiles WHERE tenant_id=?1",
-                [tenant],
-                |row| row.get(0),
-            )?;
-            if count >= MAX_BUILDS as i64 {
+            if at_build_limit(tx, tenant)? {
                 return Ok(BuildOutcome::BuildLimitReached);
             }
             let source = if let Some(source) = base_source {

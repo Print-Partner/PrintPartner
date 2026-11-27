@@ -219,7 +219,9 @@ const REFUSAL_CODES: &str = "unauthorized unavailable outcome_unknown internal b
     spoolman_unavailable spoolman_filament_not_found spoolman_color_mismatch \
     spoolman_spool_not_found invalid_inputs invalid_input invalid_evidence_kind invalid_url \
     source_not_found derived_evidence_not_found invalid_hours no_structural_base \
-    unresolved_source_choices layer_conflict no_stls would_wipe idempotency_conflict";
+    unresolved_source_choices layer_conflict no_stls would_wipe idempotency_conflict \
+    invalid_proposal build_archived snapshot_not_found snapshot_not_restorable snapshot_restore_refused \
+    printed_units_affected print_remaining build_limit_reached inputs_changed";
 
 /// A failed tool call: `isError` and the refusal code, when it is one.
 fn tool_error(result: &CallToolResult) -> CallToolResult {

@@ -683,6 +683,7 @@ impl ServerHandler for ProductMcp {
             .map_err(|error| internal(error.0))?;
         plan_history::describe_inputs(&mut tools);
         plan_checkoff::describe_inputs(&mut tools);
+        plan_history_changes::describe(&mut tools);
         let mut tools: ListToolsResult = serde_json::from_value(tools).map_err(internal)?;
         if let Some(list) = tools
             .tools
@@ -734,6 +735,10 @@ impl ServerHandler for ProductMcp {
                     .await
             }
             plan_accept::PROPOSE => self.propose_accept(&arguments, presented, staged_by).await,
+            name if plan_history_changes::TOOLS.contains(&name) => {
+                self.propose_history_change(name, &arguments, presented, staged_by)
+                    .await
+            }
             "confirm_apply" => {
                 #[cfg(test)]
                 if let Some(gate) = &self.reads.confirm_gate {
@@ -786,6 +791,8 @@ pub(crate) mod plan_accept;
 mod plan_checkoff;
 #[path = "mcp/plan_history.rs"]
 mod plan_history;
+#[path = "mcp/plan_history_changes.rs"]
+mod plan_history_changes;
 #[path = "mcp/planning.rs"]
 mod planning;
 #[path = "mcp/planning_reads.rs"]

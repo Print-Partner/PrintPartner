@@ -3,7 +3,7 @@ use super::*;
 use crate::mcp::plan_history::TOOLS;
 use pp_storage::read_model::{AcceptedRead, Artifact, Credential};
 
-async fn fixture(seed: &str) -> (McpServer, Vec<(String, String)>) {
+pub(super) async fn fixture(seed: &str) -> (McpServer, Vec<(String, String)>) {
     let server = McpServer::seeded(seed).await;
     std::fs::create_dir_all(server._directory.join("repos/1/revisions/fixture")).unwrap();
     let headers = session(&server, &format!("Bearer {}", server.create_key().await.1)).await;

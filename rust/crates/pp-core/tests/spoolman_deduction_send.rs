@@ -44,6 +44,10 @@ use checkoff_fixture::Fixture;
 
 #[path = "spoolman_deduction_send/recovery.rs"]
 mod recovery;
+#[path = "support/release.rs"]
+mod release;
+#[path = "spoolman_deduction_send/transition.rs"]
+mod transition;
 
 const FILAMENTS: &str = include_str!("../../../../fixtures/integrations/spoolman/filaments.json");
 const SUFFICIENT: &str =

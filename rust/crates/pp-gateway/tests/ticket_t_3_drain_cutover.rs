@@ -30,6 +30,7 @@ const PROFILE_SYNC: &str = "profile.sync";
 const SOURCE_SYNC: &str = "source.sync";
 const EXPORT_STL_PACK: &str = "export.stl-pack";
 const EXPORT_ACCEPTED_PLATE: &str = "export.accepted-plate-3mf";
+const EXPORT_DIRECT: &str = "export.direct-3mf";
 // Each export job with its route, its /api/v1 alias and any other route that
 // records a job of the same kind.
 const EXPORT_OPERATIONS: [(&str, &[&str]); 5] = [
@@ -52,7 +53,7 @@ const EXPORT_OPERATIONS: [(&str, &[&str]); 5] = [
         ],
     ),
     (
-        "export.direct-3mf",
+        EXPORT_DIRECT,
         &[
             "http.POST /api/v1/jobs/export-direct-3mf",
             "http.POST /jobs/export-direct-3mf",
@@ -379,6 +380,7 @@ async fn rust_owned_gateway(dir: &Path, node: &FakeNode) -> Gateway {
         PROFILE_SYNC,
         EXPORT_STL_PACK,
         EXPORT_ACCEPTED_PLATE,
+        EXPORT_DIRECT,
         PRINTER_SEND_QUEUE,
     ] {
         switch(&index, dir, operation);
@@ -458,6 +460,22 @@ async fn ticket_t_3_drain_cutover_gateway_routes_export_operation() {
         "POST",
     )
     .await;
+}
+
+#[tokio::test]
+async fn ticket_t_58_three_mf_direct_cutover_retires_both_job_aliases() {
+    let dir = Scratch::new("pp-t58-direct-cutover-");
+    let node = fake_node(&dir);
+    let mut gateway = rust_owned_gateway(&dir, &node).await;
+    let (origin, cookie) = session(&mut gateway).await;
+    for path in ["/jobs/export-direct-3mf", "/api/v1/jobs/export-direct-3mf"] {
+        let (status, _, body) = exchange(&origin, path, "POST", Some(&cookie)).await;
+        assert_eq!(status, StatusCode::GONE, "{path}");
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["code"], "direct_3mf_job_retired");
+    }
+    assert!(node.forwards.lock().unwrap().is_empty());
+    gateway.stop().await.unwrap();
 }
 
 #[tokio::test]

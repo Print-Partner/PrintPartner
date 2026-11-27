@@ -7,8 +7,8 @@
 
 use super::{
     DATABASE_FILES, Destination, DryRunReport, Files, Held, ImportError, STAGE_RESERVE, Scratch,
-    SourceKind, ensure_outside, inventory, io_error, measure, open_regular, place_destination,
-    scan_roots, stage_directory, upgrade, verify,
+    SourceKind, board, ensure_outside, inventory, io_error, measure, open_regular,
+    place_destination, scan_roots, stage_directory, upgrade, verify,
 };
 use crate::{archive, ownership_marker};
 use serde::Serialize;
@@ -320,6 +320,7 @@ pub(super) fn import_with(
     if !changed.is_empty() {
         return Err(ImportError::RowsChanged(changed));
     }
+    let board_settings = board::convert(&connection)?;
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     connection.close().map_err(|(_, error)| error)?;
     // The closed database is one file. A write-ahead log left beside it
@@ -340,7 +341,8 @@ pub(super) fn import_with(
         path: destination.to_owned(),
         source,
     })?;
-    let report = ImportReport::new(&counts, rebased, &stored, copied);
+    let mut report = ImportReport::new(&counts, rebased, &stored, copied);
+    *report.tables.entry("app_settings".into()).or_default() += board_settings as u64;
     publish(&stage.0, &root, &report)?;
     drop(stage);
     // The marker goes into the folder this run filled, and only while the

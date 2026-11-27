@@ -42,7 +42,7 @@ async function openNoteForm() {
       notes = [note];
       return Response.json(note);
     }
-    return Response.json({ notes });
+    return Response.json({ notes, imported_posts: [] });
   });
   vi.stubGlobal("fetch", fetchMock);
   const router = createMemoryRouter(routes, { initialEntries: ["/board"] });
@@ -105,7 +105,7 @@ it("lets an owner select the 65th Build when the full Build list is refused", as
     if (path === "/api/v2/board/notes" && init?.method === "POST") {
       return Response.json({ ...note, build_id: 65, build_name: "Build 65" });
     }
-    return Response.json({ notes: [] });
+    return Response.json({ notes: [], imported_posts: [] });
   });
   vi.stubGlobal("fetch", fetchMock);
   const router = createMemoryRouter(routes, { initialEntries: ["/board"] });
@@ -134,7 +134,7 @@ it("opens Board from the rail, creates a local note, and links to its Build", as
         notes = [note];
         return reply(note);
       }
-      return reply({ notes });
+      return reply({ notes, imported_posts: [] });
     }
     return reply({});
   });
@@ -163,4 +163,26 @@ it("opens Board from the rail, creates a local note, and links to its Build", as
   );
   expect(posts).toHaveLength(1);
   expect(JSON.parse(String(posts[0][1]?.body))).toEqual({ build_id: 2, body: note.body });
+});
+
+it("shows imported posts without any Build links or editing controls", async () => {
+  const post = {
+    id: "legacy-a",
+    title: "Original enclosure",
+    caption: "Keep the spare clips.",
+    created_at: "2026-11-23T12:00:00.000Z",
+  };
+  vi.stubGlobal("fetch", vi.fn(async (path: string) =>
+    Response.json(path === "/api/v2/board/notes" ? { notes: [], imported_posts: [post] } : {}),
+  ));
+  const router = createMemoryRouter(routes, { initialEntries: ["/board"] });
+  render(<App router={router} queryClient={createQueryClient()} />);
+
+  const imported = within(await screen.findByRole("region", { name: "Imported posts" }));
+  expect(imported.getByRole("heading", { name: post.title })).toBeTruthy();
+  expect(imported.getByText(post.caption)).toBeTruthy();
+  expect(imported.getByRole("time").getAttribute("datetime")).toBe(post.created_at);
+  expect(imported.queryByRole("link")).toBeNull();
+  expect(imported.queryByRole("button")).toBeNull();
+  expect(screen.queryByText("No Build notes yet.")).toBeNull();
 });

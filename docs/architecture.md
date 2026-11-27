@@ -64,7 +64,7 @@ Order features no longer wait until Rust reaches parity with Node. The
 protection and Spoolman shortfall tasks in this program. These stay out:
 
 - Multi-user accounts, SaaS, hosted planning and tenant modes, Postgres, and the
-  community board. The private Board is a local Build-note feed, not community posting.
+  community board. The private Board shows local Build notes and read-only imported posts, not community posting.
 - Product analytics and default-on telemetry. Sentry stays opt-in.
 - Porting the old screens, and old-screen visual or route-shape parity
   ([ADR 0008](adr/0008-replace-the-old-screens.md)).

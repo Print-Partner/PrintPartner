@@ -103,7 +103,10 @@ to decide whether Source files and documents are available.
 
 ### Private Board (Rust-only)
 
-`GET /api/v2/board/notes` returns `{ "notes": [...] }` newest first.
+`GET /api/v2/board/notes` returns `{ "notes": [...], "imported_posts": [...] }`.
+Both lists are newest first. Imported posts contain `id`, `caption`, `title`
+and `created_at`. They are read-only, have no Build link, and exclude hidden
+posts, comments, covers and recipe snapshots.
 `GET /api/v2/board/builds` returns the owner's Build IDs and names as `{ "builds": [...] }`,
 ordered by name and ID. This picker does not load the full Plan summaries.
 `POST /api/v2/board/notes` takes `{ "build_id": 1, "body": "Check the fit." }`
@@ -115,7 +118,7 @@ The feed only shows the authenticated owner's Builds. Creating a note for a
 missing or foreign Build returns 404 `board_build_not_found`. A note is plain text,
 trimmed to 1–2,000 UTF-8 bytes and without control characters other than tabs
 and line breaks (400 `invalid_board_note`). A Build holds up to 20 notes
-(409 `board_note_limit`). No legacy posts, comments, covers or external sharing.
+(409 `board_note_limit`). The Board does not support comments or external sharing.
 
 ### Builds and Plans
 

@@ -8,6 +8,7 @@
 //! in the source for writing, and SQLite never opens the source database, so
 //! no `-shm` or `-wal` file appears there.
 
+mod board;
 mod builds;
 mod checkoff;
 mod convert;

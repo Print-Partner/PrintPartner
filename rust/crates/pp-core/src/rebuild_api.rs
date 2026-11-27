@@ -15,7 +15,7 @@ use pp_api::{
     history::history_router,
     integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
-    mcp::{McpClients, McpFarm, McpHttpConfig, mcp_router, proposal_router},
+    mcp::{McpClients, McpFarm, McpHttpConfig, product_proposal_routes},
     modules::modules_router,
     planning::planning_router,
     plates::plates_router,
@@ -473,8 +473,8 @@ fn read_router_with_updates(
         accepted: accepted_client,
         farm: mcp_farm(farm_clients, runtime.farm, settings)?,
     };
-    let proposals = proposal_router(config.clone(), proposal_clients.clone());
-    let mcp = mcp_router(
+    let proposals = product_proposal_routes(
+        config.clone(),
         mcp_config(origin, api_key_tenant, runtime.server)?,
         auth_client.clone(),
         proposal_clients,
@@ -493,8 +493,7 @@ fn read_router_with_updates(
             .merge(events)
             .merge(checkoff)
             .merge(plates)
-            .merge(proposals)
-            .merge(mcp),
+            .merge(proposals),
     ))
 }
 

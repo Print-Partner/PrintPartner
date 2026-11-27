@@ -26,6 +26,7 @@
 //! against the listener's validated authority (`NetworkAdmission`), and no
 //! peer is trusted by its address.
 
+use crate::accepted::AcceptedHttpConfig;
 use crate::loopback::{
     LoopbackOrigin, PresentedCredential, admit, principal, rebuild_flag_enabled,
     require_api_key_tenant,
@@ -374,8 +375,7 @@ pub(crate) fn test_router_watching(
             inventory,
         },
     };
-    let router =
-        proposal_router(http, clients.clone()).merge(mcp_router(config, auth.clone(), clients));
+    let router = product_proposal_routes(http, config, auth.clone(), clients);
     (router, auth)
 }
 
@@ -703,7 +703,17 @@ mod farm_status;
 mod import_inputs;
 #[path = "mcp/pending_actions.rs"]
 mod pending_actions;
-pub use pending_actions::http::proposal_router;
+use pending_actions::http::proposal_router;
+
+/// Mounts MCP and the replacement UI's proposal endpoints over the same clients.
+pub fn product_proposal_routes(
+    http: AcceptedHttpConfig,
+    mcp: McpHttpConfig,
+    auth: RebuildAuthClient,
+    clients: McpClients,
+) -> Router {
+    proposal_router(http, clients.clone()).merge(mcp_router(mcp, auth, clients))
+}
 #[cfg(feature = "codegen")]
 pub(crate) use pending_actions::http::{
     Proposal, ProposalDecision, ProposalList, proposal_fixtures,

@@ -157,7 +157,7 @@ impl ProductMcp {
             tool,
             plan.get() as i64,
             label,
-            "Requires confirmation.".into(),
+            "Requires confirmation.",
             params,
         );
         let result = ToolResult::ok(action.proposed_content());

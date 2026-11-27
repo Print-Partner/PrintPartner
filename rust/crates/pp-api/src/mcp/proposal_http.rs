@@ -88,6 +88,37 @@ pub(crate) enum ProposalDecision {
     Dismissed,
 }
 
+#[cfg(feature = "codegen")]
+pub(crate) fn proposal_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+    use crate::client_contract::codegen::served;
+
+    let proposal = |state| Proposal {
+        id: "proposal-2".into(),
+        plan_id: 7,
+        label: "Apply reviewed draft".into(),
+        summary: "Publish the reviewed Draft as the Accepted Plan.".into(),
+        params: Map::from_iter([("draft_id".into(), json!(11))]),
+        state,
+        staged_by: "UI".into(),
+        created_at: "2026-11-07T05:00:00.000Z".into(),
+        expires_at: "2026-11-07T13:00:00.000Z".into(),
+        depends_on: vec!["proposal-1".into()],
+    };
+    Ok(vec![
+        served("Proposal", "staged", proposal(OpenState::Pending))?,
+        served(
+            "ProposalList",
+            "expired",
+            ProposalList {
+                actions: vec![proposal(OpenState::Expired)],
+                omitted: 1,
+            },
+        )?,
+        served("ProposalDecision", "applied", ProposalDecision::Applied)?,
+        served("ProposalDecision", "dismissed", ProposalDecision::Dismissed)?,
+    ])
+}
+
 /// Mounts proposal review on the Rust API only, with rebuild HTTP admission.
 pub fn proposal_router(config: AcceptedHttpConfig, clients: McpClients) -> Router {
     let Some(gate) = Gate::open(config) else {

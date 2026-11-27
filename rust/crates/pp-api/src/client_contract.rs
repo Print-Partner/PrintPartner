@@ -2651,6 +2651,7 @@ pub(crate) mod codegen {
             )?,
         ];
         cases.extend(crate::auth::contract::fixtures()?);
+        cases.extend(crate::mcp::proposal_fixtures()?);
         for (name, value) in [
             ("on", json!({"on": true})),
             ("off", json!({"on": false})),

@@ -705,7 +705,9 @@ mod import_inputs;
 mod pending_actions;
 pub use pending_actions::http::proposal_router;
 #[cfg(feature = "codegen")]
-pub(crate) use pending_actions::http::{Proposal, ProposalDecision, ProposalList};
+pub(crate) use pending_actions::http::{
+    Proposal, ProposalDecision, ProposalList, proposal_fixtures,
+};
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
 #[path = "mcp/planning.rs"]

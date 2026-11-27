@@ -60,9 +60,6 @@ pub mod profile_interpreter;
 pub mod review_observations;
 
 #[cfg(feature = "desktop_rebuild")]
-mod web_discovery;
-
-#[cfg(feature = "desktop_rebuild")]
 pub mod rebuild_api;
 
 #[cfg(feature = "desktop_rebuild")]

@@ -17,14 +17,14 @@ const MAX_URL: usize = 2_048;
 const MAX_REDIRECTS: usize = 3;
 const DEADLINE: Duration = Duration::from_secs(12);
 
-pub(crate) struct WebDiscovery {
+pub(super) struct WebDiscovery {
     client: Client,
     brave_key: Option<header::HeaderValue>,
     limit: Semaphore,
 }
 
 impl WebDiscovery {
-    pub(crate) fn from_env() -> anyhow::Result<Option<Arc<dyn Discovery>>> {
+    pub(super) fn from_env() -> anyhow::Result<Option<Arc<dyn Discovery>>> {
         if std::env::var("PP_ASSISTANT_WEB_DISCOVERY").as_deref() != Ok("1") {
             return Ok(None);
         }

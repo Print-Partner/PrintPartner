@@ -50,6 +50,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod web_discovery;
+
 pub struct AuthRoutes {
     pub http: AuthHttpConfig,
     pub policy: AuthPolicy,
@@ -274,7 +276,7 @@ impl RuntimeInputs {
                 explicit_listener,
             },
             farm: Arc::new(farm.clone()),
-            web_discovery: crate::web_discovery::WebDiscovery::from_env()?,
+            web_discovery: web_discovery::WebDiscovery::from_env()?,
         })
     }
 

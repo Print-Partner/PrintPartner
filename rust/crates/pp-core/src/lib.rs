@@ -60,6 +60,9 @@ pub mod profile_interpreter;
 pub mod review_observations;
 
 #[cfg(feature = "desktop_rebuild")]
+mod web_discovery;
+
+#[cfg(feature = "desktop_rebuild")]
 pub mod rebuild_api;
 
 #[cfg(feature = "desktop_rebuild")]
@@ -631,7 +634,7 @@ async fn start_rust_resources(
         Arc::clone(&writer),
         &origin,
         community_manifests.as_deref(),
-        rebuild_api::RuntimeInputs::running(server_updates, listen.is_some(), &farm),
+        rebuild_api::RuntimeInputs::running(server_updates, listen.is_some(), &farm)?,
     )?
     .context("Rust product routes need the rebuild setting")?
     .merge(uploads);

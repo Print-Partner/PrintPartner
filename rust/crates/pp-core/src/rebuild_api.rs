@@ -257,6 +257,7 @@ fn mcp_config(origin: &str, api_key_tenant: &str, server: ServerOptions) -> Resu
 pub(crate) struct RuntimeInputs {
     pub(crate) server: ServerOptions,
     pub(crate) farm: Arc<dyn pp_api::farm::FarmObservations>,
+    pub(crate) web_discovery: Option<Arc<dyn pp_api::mcp::web_discovery::Discovery>>,
 }
 
 impl RuntimeInputs {
@@ -266,14 +267,15 @@ impl RuntimeInputs {
         update_checks: bool,
         explicit_listener: bool,
         farm: &crate::printer_status::LateFarm,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             server: ServerOptions {
                 update_checks,
                 explicit_listener,
             },
             farm: Arc::new(farm.clone()),
-        }
+            web_discovery: crate::web_discovery::WebDiscovery::from_env()?,
+        })
     }
 
     /// Default server options and no watchers: what tests and compositions
@@ -282,6 +284,7 @@ impl RuntimeInputs {
         Self {
             server: ServerOptions::default(),
             farm: Arc::new(crate::printer_status::LateFarm::default()),
+            web_discovery: None,
         }
     }
 }
@@ -478,6 +481,7 @@ fn read_router_with_updates(
         progress: checkoff_client,
         accepted: accepted_client,
         filaments: filament_client,
+        web_discovery: runtime.web_discovery,
         review_observer: Some(Arc::new(review_observer)),
         farm: mcp_farm(farm_clients, runtime.farm, settings)?,
     };

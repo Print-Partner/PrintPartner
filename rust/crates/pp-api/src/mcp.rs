@@ -87,6 +87,8 @@ pub struct McpHttpConfig {
     confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
     #[cfg(test)]
     clock: Option<Arc<rate_limit::ManualClock>>,
+    #[cfg(test)]
+    web_discovery: Option<Arc<dyn web_discovery::Discovery>>,
 }
 
 impl McpHttpConfig {
@@ -106,6 +108,8 @@ impl McpHttpConfig {
             confirm_gate: None,
             #[cfg(test)]
             clock: None,
+            #[cfg(test)]
+            web_discovery: None,
         })
     }
 
@@ -166,6 +170,7 @@ struct Reads {
     progress: ProgressClient,
     accepted: ReadClient,
     filaments: pp_storage::filaments::FilamentClient,
+    web_discovery: Option<Arc<dyn web_discovery::Discovery>>,
     review_observer: Option<Arc<dyn McpReviewObserver>>,
     farm: McpFarm,
     wait: Duration,
@@ -184,6 +189,7 @@ pub struct McpClients {
     pub progress: ProgressClient,
     pub accepted: ReadClient,
     pub filaments: pp_storage::filaments::FilamentClient,
+    pub web_discovery: Option<Arc<dyn web_discovery::Discovery>>,
     pub review_observer: Option<Arc<dyn McpReviewObserver>>,
     pub farm: McpFarm,
 }
@@ -198,6 +204,7 @@ impl McpClients {
             progress: self.progress,
             accepted: self.accepted,
             filaments: self.filaments,
+            web_discovery: self.web_discovery,
             review_observer: self.review_observer,
             farm: self.farm,
             wait,
@@ -383,6 +390,7 @@ pub(crate) fn test_router_watching(
         progress,
         accepted,
         filaments: owner.filaments_with_policy(policy).unwrap(),
+        web_discovery: config.web_discovery.clone(),
         review_observer: Some(Arc::new(FixtureReviewObserver)),
         farm: McpFarm {
             reads: owner.farm_reads(policy).unwrap(),
@@ -690,6 +698,9 @@ impl ServerHandler for ProductMcp {
         plan_history_changes::describe(&mut tools);
         filament_catalog::describe(&mut tools);
         let mut tools: ListToolsResult = serde_json::from_value(tools).map_err(internal)?;
+        tools
+            .tools
+            .retain(|tool| web_discovery::enabled(&tool.name, self.reads.web_discovery.as_deref()));
         if let Some(list) = tools
             .tools
             .iter_mut()
@@ -725,6 +736,12 @@ impl ServerHandler for ProductMcp {
         let result = match request.name.as_ref() {
             "get_build_workflow" => self.build_workflow(&arguments, presented).await,
             filament_catalog::MATCH => self.find_filament_matches(&arguments, presented).await,
+            name if web_discovery::TOOLS.contains(&name) => {
+                tokio::select! {
+                    () = context.ct.cancelled() => return Err(internal("Web discovery cancelled")),
+                    result = web_discovery::call(name, &arguments, self.reads.web_discovery.as_deref()) => result,
+                }
+            }
             name if planning_reads::TOOLS.contains(&name) => {
                 self.planning_read(&request.name, &arguments, presented)
                     .await
@@ -778,6 +795,8 @@ mod filament_catalog;
 mod import_inputs;
 #[path = "mcp/pending_actions.rs"]
 mod pending_actions;
+#[path = "mcp/web_discovery.rs"]
+pub mod web_discovery;
 use pending_actions::http::proposal_router;
 
 /// Mounts MCP and the replacement UI's proposal endpoints over the same clients.

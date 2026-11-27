@@ -120,7 +120,11 @@ pub fn extract(text: &str, page_links: &[String]) -> Extract {
         .iter()
         .any(|cue| lower.starts_with(cue))
         {
-            let candidate = line.split(['.', '!']).next().unwrap_or(line);
+            let end = line
+                .match_indices(['.', '!', '?'])
+                .find(|(i, _)| line[i + 1..].chars().next().is_none_or(char::is_whitespace))
+                .map_or(line.len(), |(i, _)| i);
+            let candidate = &line[..end];
             if candidate.len() <= 140 {
                 push(&mut result.replacements, candidate);
             }

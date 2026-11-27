@@ -1,6 +1,7 @@
 use super::reads::{session, tool};
 use super::*;
 use crate::mcp::plan_history::TOOLS;
+use pp_storage::read_model::{AcceptedRead, Artifact, Credential};
 
 async fn fixture(seed: &str) -> (McpServer, Vec<(String, String)>) {
     let server = McpServer::seeded(seed).await;
@@ -112,4 +113,60 @@ async fn mcp_plan_history_preserves_current_part_and_draft_identity() {
     let (stale, failed) = call("search_plan_parts", json!({"plan_id":1,"query":"bracket"})).await;
     assert!(failed, "{stale}");
     assert_eq!(stale["code"], "stale_plan");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_plan_history_compares_same_path_artifacts() {
+    use crate::mcp::plan_history::unique_parts;
+
+    let (server, _) = fixture("").await;
+    let client = server.owner.accepted_reads_with_policy(policy()).unwrap();
+    let read = client
+        .read_plan(
+            Credential::Session(Secret::new(FIXTURE_SESSION.into())),
+            Some(1),
+            &std::sync::atomic::AtomicBool::new(false),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    let AcceptedRead::Ready { snapshot } = read else {
+        panic!("expected an Accepted revision: {read:?}");
+    };
+    let before = &snapshot.parts[..1];
+    let mut after = before.to_vec();
+    after[0].revision_part_id += 100;
+    let Artifact::Tracked {
+        source_revision_id, ..
+    } = &mut after[0].artifact
+    else {
+        panic!("expected a tracked Part");
+    };
+    *source_revision_id += 100;
+    assert_eq!(unique_parts(before, &after)["count"], 0);
+
+    for change_source in [true, false] {
+        let mut replaced = after.clone();
+        let Artifact::Tracked {
+            source_id,
+            expected_sha256,
+            ..
+        } = &mut replaced[0].artifact
+        else {
+            unreachable!();
+        };
+        if change_source {
+            *source_id += 100;
+        } else {
+            *expected_sha256 = "f".repeat(64);
+        }
+        for (left, right) in [(before, replaced.as_slice()), (&replaced, before)] {
+            let diff = unique_parts(left, right);
+            assert_eq!(diff["count"], 1);
+            assert_eq!(diff["sample"][0]["part_key"], left[0].part_key);
+            assert_eq!(
+                diff["sample"][0]["revision_part_id"],
+                left[0].revision_part_id
+            );
+        }
+    }
 }

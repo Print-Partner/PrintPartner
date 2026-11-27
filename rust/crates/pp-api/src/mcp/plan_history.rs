@@ -9,7 +9,7 @@ use pp_services::mcp_domain::ToolResult;
 use pp_storage::{
     build_graph::{ManifestOptionsOutcome, PositiveId},
     read_model::{
-        AcceptedRead, Credential,
+        AcceptedRead, Artifact, Credential, Part,
         history::plan::{PartIdentity, PlanHistory, RevisionRead},
         views::{self, CatalogOnly, ReviewObservations},
     },
@@ -238,7 +238,7 @@ fn accepted_profile(read: &AcceptedRead) -> Result<&pp_storage::read_model::Prof
     }
 }
 
-fn accepted_parts(read: &AcceptedRead) -> &[pp_storage::read_model::Part] {
+fn accepted_parts(read: &AcceptedRead) -> &[Part] {
     match read {
         AcceptedRead::Ready { snapshot } => &snapshot.parts,
         _ => &[],
@@ -378,6 +378,27 @@ fn selection_diff(a: &Value, b: &Value) -> Value {
     json!({"only_a": only_a, "only_b": only_b, "changed": changed})
 }
 
+fn part_comparison_key(part: &Part) -> (&str, &str, Option<(i64, &str)>) {
+    let artifact = match &part.artifact {
+        Artifact::Tracked {
+            source_id,
+            expected_sha256,
+            ..
+        } => Some((*source_id, expected_sha256.as_str())),
+        Artifact::Unavailable { .. } => None,
+    };
+    (&part.part_key, &part.source_layer, artifact)
+}
+
+pub(super) fn unique_parts(left: &[Part], right: &[Part]) -> Value {
+    let other: BTreeSet<_> = right.iter().map(part_comparison_key).collect();
+    let differing = left
+        .iter()
+        .filter(|part| !other.contains(&part_comparison_key(part)));
+    json!({"count": differing.clone().count(), "sample": differing.take(20)
+        .map(PartIdentity::from).collect::<Vec<_>>()})
+}
+
 fn compare(a: &PlanHistory, b: &PlanHistory) -> Result<Value, Refusal> {
     let (profile_a, profile_b) = (
         accepted_profile(&a.accepted)?,
@@ -415,17 +436,7 @@ fn compare(a: &PlanHistory, b: &PlanHistory) -> Result<Value, Refusal> {
             .map(|d| json!({"label": d.label, "kind": d.kind, "summary": d.summary}))
             .collect::<Vec<_>>()
     };
-    let parts = |left: &AcceptedRead, right: &AcceptedRead| {
-        let other: BTreeSet<_> = accepted_parts(right)
-            .iter()
-            .map(|part| part.part_key.as_str())
-            .collect();
-        let differing = accepted_parts(left)
-            .iter()
-            .filter(|part| !other.contains(part.part_key.as_str()));
-        json!({"count": differing.clone().count(), "sample": differing.take(20)
-            .map(PartIdentity::from).collect::<Vec<_>>()})
-    };
+    let (parts_a, parts_b) = (accepted_parts(&a.accepted), accepted_parts(&b.accepted));
     Ok(json!({
         "plan_a": {"id": profile_a.id, "name": profile_a.name, "basis": basis(&a.accepted), "build_stale": a.build_stale},
         "plan_b": {"id": profile_b.id, "name": profile_b.name, "basis": basis(&b.accepted), "build_stale": b.build_stale},
@@ -435,6 +446,6 @@ fn compare(a: &PlanHistory, b: &PlanHistory) -> Result<Value, Refusal> {
             "shared": addons_a.intersection(&addons_b).collect::<Vec<_>>()},
         "refs": refs, "kit_selections": selection_diff(&kit(a)?["selections"], &kit(b)?["selections"]),
         "recent_decisions": {"a": decisions(a), "b": decisions(b)},
-        "parts": {"only_a": parts(&a.accepted, &b.accepted), "only_b": parts(&b.accepted, &a.accepted)},
+        "parts": {"only_a": unique_parts(parts_a, parts_b), "only_b": unique_parts(parts_b, parts_a)},
     }))
 }

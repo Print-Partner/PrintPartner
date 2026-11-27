@@ -9,7 +9,7 @@ Print Partner exposes product operations to AI assistants over the Model Context
 - MCP runs over streamable HTTP at `/api/v1/mcp`.
 - Every request needs an API key, including requests from the same machine.
 - Read tools return current data. Write tools stage a proposal; they do not change the Build, Plan, or Checkoff until the client calls `confirm_apply`.
-- Existing tool names and required inputs stay the same. Rust may add optional inputs.
+- Rust keeps existing tool names. The Plan history reads below use explicit Plan IDs.
 
 ## Decide proposals
 
@@ -31,7 +31,7 @@ These five reads use the request's API key. An ID owned by another tenant is tre
 | `get_plan_snapshot` `{ plan_id, revision_id? }` | Current Build configuration, Accepted revision history, and the open Draft's ID, base and stale flag. With a revision ID, returns only that immutable revision's basis and Part count. |
 | `get_plan_review` `{ plan_id }` | Accepted revision basis, issue counts, blockers, role and filament totals, and Source layers. It checks local artifacts but does not query live spool inventory. |
 | `search_plan_parts` `{ plan_id, query, limit?, revision_id? }` | Case-insensitive filename and relative path matches in the current Accepted revision or a named revision. Each hit includes its Part key, Part ID, revision Part ID and Required-unit tokens. |
-| `compare_plans` `{ plan_a_id, plan_b_id }` | Both Builds' revision bases, base Sources, addons, refs, kit selection changes, recent decisions and Parts unique to either Plan. |
+| `compare_plans` `{ plan_a_id, plan_b_id }` | Both Builds' revision bases, base Sources, addons, refs, kit selection changes, recent decisions and Parts unique to either Plan. A tracked Part can differ at the same path if its Source or STL digest changed. |
 
 An empty Build has no Accepted revision (`basis.kind: "empty"`). A stale Build can still report its Accepted revision; `build_stale` means its current configuration no longer matches that revision. A missing Plan answers `plan_not_found`, a missing or unrelated revision answers `not_found`, and an uninitialized or compatibility-dirty head or changing option-group observation answers `stale_plan`. These refusals set `isError` and carry an `error` message and a machine-readable `code`.
 

@@ -157,12 +157,22 @@ fn relation_target(element: &BytesStart<'_>) -> Result<Option<String>, Refusal> 
     let path = target.strip_prefix('/').unwrap_or(&target);
     if external
         || path.contains([':', '?', '#', '\\', '\0'])
-        || path.split('/').any(|part| matches!(part, "" | "." | ".."))
         || !path.to_ascii_lowercase().ends_with(".model")
     {
         return Err(Refusal::Package);
     }
-    Ok(Some(path.to_owned()))
+    let mut segments = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" => return Err(Refusal::Package),
+            "." => {}
+            ".." => {
+                segments.pop().ok_or(Refusal::Package)?;
+            }
+            part => segments.push(part),
+        }
+    }
+    Ok(Some(segments.join("/")))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -563,11 +573,22 @@ mod tests {
             }
             archive.finish().unwrap().into_inner()
         };
-        assert_eq!(
-            inspect(&package(Some("/SELECTED.MODEL"), false)).unwrap()[0].name,
-            "right"
-        );
-        for relationship in [None, Some("/missing.model"), Some("../selected.model")] {
+        for target in [
+            "/SELECTED.MODEL",
+            "./selected.model",
+            "3D/../selected.model",
+        ] {
+            assert_eq!(
+                inspect(&package(Some(target), false)).unwrap()[0].name,
+                "right"
+            );
+        }
+        for relationship in [
+            None,
+            Some("/missing.model"),
+            Some("../selected.model"),
+            Some("//host/selected.model"),
+        ] {
             assert_eq!(
                 inspect(&package(relationship, false)),
                 Err(Refusal::Package)

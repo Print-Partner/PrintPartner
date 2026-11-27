@@ -47,6 +47,35 @@ async fn duplicate_refuses_to_overfill_the_builds_list() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_refuses_when_layers_no_longer_match_accepted_inputs() {
+    let (server, headers, db) = setup().await;
+    let (proposal, failed) = tool(
+        &server,
+        &headers,
+        "duplicate_plan",
+        json!({"plan_id": 1, "name": "Experiment"}),
+    )
+    .await;
+    assert!(!failed, "{proposal}");
+    assert_eq!(
+        db.execute("DELETE FROM profile_layers WHERE profile_id=1", [])
+            .unwrap(),
+        1
+    );
+    let (result, failed) = confirm(&server, &headers, &proposal).await;
+    assert!(failed, "{result}");
+    assert_eq!(result["code"], "inputs_changed");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM build_profiles WHERE name='Experiment'"
+        ),
+        0
+    );
+    assert_eq!(count(&db, "SELECT count(*) FROM build_experiments"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_restore_keeps_accepted_identity_and_restores_provenance_as_a_draft() {
     let (server, headers, db) = setup().await;
     let call = |name, args| tool(&server, &headers, name, args);

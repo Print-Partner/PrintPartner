@@ -273,6 +273,10 @@ fn refusal(error: &Refusal) -> McpRefusal {
         ),
         Refusal::DuplicateName => (Code::NameTaken, "A Build with that name already exists"),
         Refusal::BuildLimitReached => (Code::BuildLimitReached, "Build limit reached"),
+        Refusal::ExperimentInputsChanged => (
+            Code::InputsChanged,
+            "The Build's Source layers differ from its Accepted Plan. Reconcile them before duplicating.",
+        ),
         Refusal::Archive(ArchiveRefusal::Remaining) => (
             Code::PrintRemaining,
             "Archive only when print remaining is 0",

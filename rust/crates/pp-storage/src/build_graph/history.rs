@@ -35,6 +35,10 @@ pub enum Refusal {
     DuplicateName,
     #[error("Build limit reached")]
     BuildLimitReached,
+    #[error(
+        "The Build's Source layers differ from its Accepted Plan. Reconcile them before duplicating."
+    )]
+    ExperimentInputsChanged,
     #[error("The Plan cannot be archived")]
     Archive(ArchiveRefusal),
     #[error(transparent)]
@@ -108,6 +112,9 @@ impl BuildGraphClient {
                             BuildOutcome::Duplicated(copy) => Ok(Applied::Duplicate(copy)),
                             BuildOutcome::RenameTaken { .. } => Err(Refusal::DuplicateName),
                             BuildOutcome::BuildLimitReached => Err(Refusal::BuildLimitReached),
+                            BuildOutcome::ExperimentInputsChanged => {
+                                Err(Refusal::ExperimentInputsChanged)
+                            }
                             BuildOutcome::MissingBuild => Err(Refusal::Missing),
                             _ => {
                                 Err(WriterFailure::from(anyhow!("Unexpected duplicate outcome"))

@@ -41,7 +41,7 @@ These tools stage proposals only. `confirm_apply` uses the Accepted head observe
 | --- | --- |
 | `create_plan_snapshot` `{ plan_id, name? }` | Append a named snapshot of the Accepted revision and Build header. Returns `snapshot_id` for use with restore; this is not a revision ID. |
 | `propose_restore_snapshot` `{ plan_id, snapshot_id }` | Restore to a new Draft without changing the Accepted Plan or Checkoff. An open Draft or a snapshot without a recorded Accepted revision blocks restore. Inspect the Draft before accepting it. |
-| `duplicate_plan` `{ plan_id, name }` | Create a detached experiment, turning Accepted choices into a new Draft. Does not copy Checkoff, Plates or send state. |
+| `duplicate_plan` `{ plan_id, name }` | Create a detached experiment, turning Accepted choices into a new Draft. Does not copy Checkoff, Plates or send state. Refuses at the Build limit or when current Source layers no longer match the Accepted inputs. |
 | `archive_plan` `{ plan_id }` | Archive only when the same Accepted Plan has no remaining Required units. Retain its history and completed progress. |
 
 ### Other reads and proposals

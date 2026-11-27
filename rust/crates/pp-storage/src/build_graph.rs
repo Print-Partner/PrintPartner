@@ -155,6 +155,7 @@ pub enum BuildOutcome {
         profile: Box<ProfileSummary>,
     },
     Duplicated(ExperimentCopy),
+    ExperimentInputsChanged,
     HasExperiments {
         builds: Vec<ExperimentBuild>,
     },

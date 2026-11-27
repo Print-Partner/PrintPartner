@@ -96,6 +96,7 @@ pub(super) enum Code {
     PrintedUnitsAffected,
     PrintRemaining,
     BuildLimitReached,
+    InputsChanged,
 }
 
 impl Code {
@@ -168,6 +169,7 @@ impl Code {
             Self::PrintedUnitsAffected => "printed_units_affected",
             Self::PrintRemaining => "print_remaining",
             Self::BuildLimitReached => "build_limit_reached",
+            Self::InputsChanged => "inputs_changed",
         }
     }
 }

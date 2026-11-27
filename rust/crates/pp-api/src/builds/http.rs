@@ -633,6 +633,11 @@ fn present(
             json_response(StatusCode::OK, &json!(ProfileList { profiles }), head)
         }
         BuildOutcome::Duplicated(copy) => json_response(StatusCode::CREATED, &copy, head),
+        BuildOutcome::ExperimentInputsChanged => crate::problem::coded(
+            StatusCode::CONFLICT,
+            "The Build's Source layers differ from its Accepted Plan. Reconcile them before duplicating.",
+            "inputs_changed",
+        ),
         BuildOutcome::HasExperiments { builds } => super::header::has_experiments(builds),
         BuildOutcome::RenameTaken { name } => crate::problem::duplicate_build_name(&name),
         BuildOutcome::NameRequired => failure(StatusCode::BAD_REQUEST, "Profile name is required"),

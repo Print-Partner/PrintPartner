@@ -128,6 +128,7 @@ impl Served {
                     .unwrap(),
                 progress,
                 accepted: owner.accepted_reads_with_policy(mcp_rpc::policy()).unwrap(),
+                filaments: owner.filaments_with_policy(mcp_rpc::policy()).unwrap(),
                 review_observer: None,
                 farm: pp_api::mcp::McpFarm {
                     reads: owner.farm_reads(mcp_rpc::policy()).unwrap(),

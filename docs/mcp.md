@@ -46,6 +46,15 @@ These tools stage proposals only. `confirm_apply` uses the Accepted head observe
 | `duplicate_plan` `{ plan_id, name }` | Create a detached experiment, turning Accepted choices into a new Draft. Does not copy Checkoff, Plates or send state. Refuses at the Build limit or when current Source layers no longer match the Accepted inputs. |
 | `archive_plan` `{ plan_id }` | Archive only when the same Accepted Plan has no remaining Required units. Retain its history and completed progress. |
 
+### Filament catalog
+
+| Tool | Behavior |
+| --- | --- |
+| `find_filament_matches` `{ name, brand?, color_hex? }` | Returns up to 20 bundled or local custom colors, ordered by name and brand match, then by RGB distance if `color_hex` is supplied. Names and brands are case-insensitive. `exact_available` indicates an exact name match that also matches the brand when provided. |
+| `propose_add_custom_filament` `{ display_name, hex, product_line? }` | Stages a color for the installation's catalog. On confirmation, a case-insensitive match on name, RGB and product line returns the existing entry without writing. An omitted or blank product line is `Custom`. |
+
+Catalog colors are not stock. Neither tool contacts Spoolman or reads or changes spool quantities.
+
 ### Other reads and proposals
 
 - `get_build_workflow` reads the Build workflow with the request's API key, the same projection as `GET /plans/{id}/workflow` and the task feed ([Build workflow](build-workflow.md)). Errors answer `{"error": "plan_id required"}`, `{"error": "Build not found"}` or `{"error": "Build workflow is unavailable"}`. The last covers a storage or authentication failure, a Build that fails its integrity checks, and a body that can't be serialized. Every error sets `isError`.

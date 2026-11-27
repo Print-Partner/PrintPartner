@@ -165,6 +165,7 @@ struct Reads {
     planning: PlanningClient,
     progress: ProgressClient,
     accepted: ReadClient,
+    filaments: pp_storage::filaments::FilamentClient,
     review_observer: Option<Arc<dyn McpReviewObserver>>,
     farm: McpFarm,
     wait: Duration,
@@ -182,6 +183,7 @@ pub struct McpClients {
     pub planning: PlanningClient,
     pub progress: ProgressClient,
     pub accepted: ReadClient,
+    pub filaments: pp_storage::filaments::FilamentClient,
     pub review_observer: Option<Arc<dyn McpReviewObserver>>,
     pub farm: McpFarm,
 }
@@ -195,6 +197,7 @@ impl McpClients {
             planning: self.planning,
             progress: self.progress,
             accepted: self.accepted,
+            filaments: self.filaments,
             review_observer: self.review_observer,
             farm: self.farm,
             wait,
@@ -379,6 +382,7 @@ pub(crate) fn test_router_watching(
         planning,
         progress,
         accepted,
+        filaments: owner.filaments_with_policy(policy).unwrap(),
         review_observer: Some(Arc::new(FixtureReviewObserver)),
         farm: McpFarm {
             reads: owner.farm_reads(policy).unwrap(),
@@ -681,6 +685,7 @@ impl ServerHandler for ProductMcp {
             .map_err(|error| internal(error.0))?;
         plan_history::describe_inputs(&mut tools);
         plan_history_changes::describe(&mut tools);
+        filament_catalog::describe(&mut tools);
         let mut tools: ListToolsResult = serde_json::from_value(tools).map_err(internal)?;
         if let Some(list) = tools
             .tools
@@ -716,6 +721,7 @@ impl ServerHandler for ProductMcp {
         );
         let result = match request.name.as_ref() {
             "get_build_workflow" => self.build_workflow(&arguments, presented).await,
+            filament_catalog::MATCH => self.find_filament_matches(&arguments, presented).await,
             name if planning_reads::TOOLS.contains(&name) => {
                 self.planning_read(&request.name, &arguments, presented)
                     .await
@@ -763,6 +769,8 @@ mod create_build;
 mod draft_parts;
 #[path = "mcp/farm_status.rs"]
 mod farm_status;
+#[path = "mcp/filament_catalog.rs"]
+mod filament_catalog;
 #[path = "mcp/import_inputs.rs"]
 mod import_inputs;
 #[path = "mcp/pending_actions.rs"]

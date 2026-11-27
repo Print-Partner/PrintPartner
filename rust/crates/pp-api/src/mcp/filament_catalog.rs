@@ -167,7 +167,8 @@ impl ProductMcp {
             colors.extend(
                 custom
                     .iter()
-                    .filter_map(|entry| serde_json::from_str::<CatalogColor>(entry.get()).ok()),
+                    .filter_map(|entry| serde_json::from_str::<CatalogColor>(entry.get()).ok())
+                    .filter(|entry| !entry.id.trim().is_empty()),
             );
             Ok(query.rank(colors))
         })

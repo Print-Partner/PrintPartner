@@ -51,7 +51,7 @@ These tools stage proposals only. `confirm_apply` uses the Accepted head observe
 | Tool | Behavior |
 | --- | --- |
 | `find_filament_matches` `{ name, brand?, color_hex? }` | Returns up to 20 bundled or local custom colors, ordered by name and brand match, then by RGB distance if `color_hex` is supplied. Names and brands are case-insensitive. `exact_available` indicates an exact name match that also matches the brand when provided. |
-| `propose_add_custom_filament` `{ display_name, hex, product_line? }` | Stages a color for the installation's catalog. On confirmation, a case-insensitive match on name, RGB and product line returns the existing entry without writing. An omitted or blank product line is `Custom`. |
+| `propose_add_custom_filament` `{ display_name, hex, product_line? }` | Stages a color for the installation's catalog. On confirmation, a case-insensitive match on name, RGB and product line reuses the entry. It writes only for a new color or to give a matching imported color its missing ID. An omitted or blank product line is `Custom`. |
 
 Catalog colors are not stock. Neither tool contacts Spoolman or reads or changes spool quantities.
 

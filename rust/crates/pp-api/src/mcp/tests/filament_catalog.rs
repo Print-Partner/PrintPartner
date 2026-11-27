@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::{
     super::filament_catalog::{ADD, MATCH},
     reads::{assert_needs_key, confirm, session, tool},
@@ -11,12 +13,23 @@ const IMPORTED: &str = r##"{"filaments":[
   {"id":"custom-d","display_name":"Fixture Incomplete"}
 ]}"##;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn match_reads_local_and_bundled_colors_in_stable_order() {
+async fn fixture(body: &str) -> (McpServer, PathBuf, String) {
     let server = McpServer::start(Some("1")).await;
     let store = server._directory.join("custom_filaments.json");
-    std::fs::write(&store, IMPORTED).unwrap();
+    std::fs::write(&store, body).unwrap();
     let bearer = format!("Bearer {}", server.create_key().await.1);
+    (server, store, bearer)
+}
+
+async fn propose(server: &McpServer, headers: &[(String, String)], args: Value) -> Value {
+    let (proposal, refused) = tool(server, headers, ADD, args).await;
+    assert!(!refused, "{proposal}");
+    proposal
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn match_reads_local_and_bundled_colors_in_stable_order() {
+    let (server, store, bearer) = fixture(IMPORTED).await;
     let headers = session(&server, &bearer).await;
     let query = json!({"name":" fixture PEARL ", "brand":"IMPORTED", "color_hex":"#a1b2c2"});
     assert_needs_key(&server, MATCH, query.clone()).await;
@@ -44,21 +57,16 @@ async fn match_reads_local_and_bundled_colors_in_stable_order() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn custom_filament_confirms_after_restart_and_reuses_existing_color() {
-    let server = McpServer::start(Some("1")).await;
-    let store = server._directory.join("custom_filaments.json");
-    std::fs::write(&store, IMPORTED).unwrap();
-    let bearer = format!("Bearer {}", server.create_key().await.1);
+    let (server, store, bearer) = fixture(IMPORTED).await;
     let headers = session(&server, &bearer).await;
-    let (proposal, refused) = tool(
+    let proposal = propose(
         &server,
         &headers,
-        ADD,
         json!({
             "display_name": " Fixture Violet ", "hex": "AABBFF", "product_line": " "
         }),
     )
     .await;
-    assert!(!refused, "{proposal}");
     assert_eq!(std::fs::read_to_string(&store).unwrap(), IMPORTED);
 
     let server = server.restart().await;
@@ -82,16 +90,14 @@ async fn custom_filament_confirms_after_restart_and_reuses_existing_color() {
     assert!(refused, "{again}");
     assert_eq!(again["code"], "already_applied");
 
-    let (duplicate, refused) = tool(
+    let duplicate = propose(
         &server,
         &headers,
-        ADD,
         json!({
             "display_name": "fixture VIOLET", "hex": "#aabbff"
         }),
     )
     .await;
-    assert!(!refused, "{duplicate}");
     let (reused, refused) = confirm(&server, &headers, &duplicate).await;
     assert!(!refused, "{reused}");
     assert_eq!(reused["result"]["idempotent_replay"], true);
@@ -100,4 +106,24 @@ async fn custom_filament_confirms_after_restart_and_reuses_existing_color() {
     let (matches, refused) = tool(&server, &headers, MATCH, json!({"name":"Fixture Violet"})).await;
     assert!(!refused, "{matches}");
     assert_eq!(matches["matches"][0]["id"], filament["id"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idless_imported_color_is_repaired_in_place_on_confirmation() {
+    let imported = json!({"display_name":"Fixture Pearl","product_line":"Imported","hex":"#a1b2c3","notes":"keep"});
+    let (server, store, bearer) = fixture(&json!({"filaments":[imported]}).to_string()).await;
+    let headers = session(&server, &bearer).await;
+    let args = json!({"display_name":"Fixture Pearl","product_line":"Imported","hex":"#A1B2C3"});
+    let proposal = propose(&server, &headers, args).await;
+    let (applied, refused) = confirm(&server, &headers, &proposal).await;
+    assert!(!refused, "{applied}");
+    let item = &applied["result"]["filament"];
+    assert_eq!(applied["result"]["idempotent_replay"], false);
+    assert_eq!(item["notes"], "keep");
+    let saved: Value = serde_json::from_slice(&std::fs::read(store).unwrap()).unwrap();
+    assert_eq!(saved["filaments"], json!([item]));
+    let (matches, refused) = tool(&server, &headers, MATCH, json!({"name":"Fixture Pearl"})).await;
+    assert!(!refused, "{matches}");
+    assert!(item["id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(matches["matches"][0]["id"], item["id"]);
 }

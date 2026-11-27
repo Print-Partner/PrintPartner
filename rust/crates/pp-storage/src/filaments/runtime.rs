@@ -227,18 +227,12 @@ pub(super) fn execute(
             Outcome::Added(entry)
         }
         Request::AddNamedColor(color) => {
-            if let Some(existing) = entries.iter().find(|entry| color.matches(entry)) {
-                return Ok(Outcome::NamedColor {
-                    filament: existing.clone(),
-                    replay: true,
-                });
+            let (filament, replay) = add_or_reuse(entries, color);
+            let outcome = Outcome::NamedColor { filament, replay };
+            if replay {
+                return Ok(outcome);
             }
-            let filament = new_entry(&color.display_name, &color.hex, &color.product_line);
-            entries.push(filament.clone());
-            Outcome::NamedColor {
-                filament,
-                replay: false,
-            }
+            outcome
         }
         Request::Delete(id) => {
             let before = entries.len();
@@ -263,9 +257,36 @@ pub(super) fn execute(
     Ok(outcome)
 }
 
+fn has_entry_id(entry: &Value) -> bool {
+    entry["id"].as_str().is_some_and(|id| !id.trim().is_empty())
+}
+
+fn add_or_reuse(entries: &mut Vec<Value>, color: NamedColor) -> (Value, bool) {
+    let matching = entries
+        .iter_mut()
+        .filter(|entry| color.matches(entry))
+        .min_by_key(|entry| !has_entry_id(entry));
+    match matching {
+        Some(existing) if has_entry_id(existing) => (existing.clone(), true),
+        Some(existing) => {
+            existing["id"] = json!(new_id());
+            (existing.clone(), false)
+        }
+        None => {
+            let entry = new_entry(&color.display_name, &color.hex, &color.product_line);
+            entries.push(entry.clone());
+            (entry, false)
+        }
+    }
+}
+
+fn new_id() -> String {
+    format!("custom-{}", hex::encode(rand::random::<[u8; 4]>()))
+}
+
 fn new_entry(name: &str, hex: &str, line: &str) -> Value {
     json!({
-        "id": format!("custom-{}", hex::encode(rand::random::<[u8; 4]>())),
+        "id": new_id(),
         "display_name": name, "product_line": line, "hex": hex, "combo_label": name
     })
 }

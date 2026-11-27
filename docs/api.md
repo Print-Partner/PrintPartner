@@ -299,6 +299,8 @@ those units, and verifies each Source SHA-256 before rendering. It packs the
 objects in token order, with a 10 mm gap and a 250 mm row target. Larger
 objects start their own row. It does not use managed placements, select
 a printer, or send to a slicer. It reads the Plan's current filament colors.
+For a Spoolman filament, it uses the color saved with the matching role
+assignment, without contacting Spoolman.
 The managed and direct exports share the Source, triangle, and output caps
 above. Invalid or duplicate tokens return `400 invalid_direct_selection`;
 tokens not required by the accepted Plan return `409 invalid_direct_selection`.

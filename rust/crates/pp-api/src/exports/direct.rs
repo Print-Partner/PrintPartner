@@ -1,7 +1,7 @@
 use super::{
-    App, accepted_snapshot, attachment, exports,
+    App, attachment, exports,
     managed::{Failure, GeometryBudget, MAX_OUTPUT_BYTES, color},
-    required_members,
+    read_accepted, ready_snapshot, required_members,
 };
 use axum::{
     extract::{Path, Query, Request, State, rejection::QueryRejection},
@@ -10,11 +10,11 @@ use axum::{
 use pp_services::exports::three_mf::{DirectLayout, Model, Object, Refusal};
 use pp_storage::{
     production::model::RequiredUnitToken,
-    read_model::{ReadClient, Snapshot},
+    read_model::{DirectExportPlan, ReadClient, Snapshot},
 };
 use serde::Deserialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -31,7 +31,14 @@ pub(super) async fn download(
     query: Result<Query<Selection>, QueryRejection>,
     request: Request,
 ) -> Response {
-    let plan = match accepted_snapshot(&app, &id, request).await {
+    let DirectExportPlan {
+        accepted,
+        spoolman_colors,
+    } = match read_accepted(&app, &id, request, ReadClient::read_direct_export).await {
+        Ok(export) => export,
+        Err(failure) => return failure.response(),
+    };
+    let plan = match ready_snapshot(accepted) {
         Ok(plan) => plan,
         Err(failure) => return failure.response(),
     };
@@ -54,7 +61,7 @@ pub(super) async fn download(
                 .three_mf_render
                 .try_acquire()
                 .map_err(|_| Failure::Busy)?;
-            render(&app.client, &plan, selected, &cancelled)
+            render(&app.client, &plan, &spoolman_colors, selected, &cancelled)
         })
         .await;
     match result {
@@ -81,6 +88,7 @@ fn selection(tokens: &str) -> Result<BTreeSet<RequiredUnitToken>, Failure> {
 fn render(
     client: &ReadClient,
     plan: &Snapshot,
+    spoolman_colors: &HashMap<i64, String>,
     selected: BTreeSet<RequiredUnitToken>,
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, Failure> {
@@ -109,7 +117,12 @@ fn render(
                 color: color(
                     part.filament_custom_hex.as_deref(),
                     part.filament_color_id.as_deref(),
-                ),
+                )
+                .or_else(|| {
+                    spoolman_colors
+                        .get(&part.projection_part_id)
+                        .map(String::as_str)
+                }),
                 position_um,
                 minimum: geometry.minimum,
                 vertices: &geometry.vertices,

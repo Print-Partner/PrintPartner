@@ -2,6 +2,10 @@
 pub mod build_workflow;
 mod context;
 #[cfg(feature = "desktop_rebuild")]
+mod direct_export;
+#[cfg(feature = "desktop_rebuild")]
+pub use direct_export::DirectExportPlan;
+#[cfg(feature = "desktop_rebuild")]
 pub mod farm;
 pub(crate) mod graph;
 #[cfg(feature = "desktop_rebuild")]
@@ -255,20 +259,47 @@ impl ReadClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<AcceptedRead, crate::WriterFailure> {
+        self.with_plan(
+            "read_model.read_plan",
+            credential,
+            profile_id,
+            cancelled,
+            wait,
+            |_, _, plan| Ok(plan),
+        )
+    }
+
+    #[cfg(feature = "desktop_rebuild")]
+    fn with_plan<T>(
+        &self,
+        name: &'static str,
+        credential: Credential,
+        profile_id: Option<i64>,
+        cancelled: &AtomicBool,
+        wait: Duration,
+        convert: impl FnOnce(
+            &rusqlite::Transaction<'_>,
+            &str,
+            AcceptedRead,
+        ) -> Result<T, crate::WriterFailure>,
+    ) -> Result<T, crate::WriterFailure> {
         use crate::WriterFailure;
         let ids = match profile_id {
             Some(id) => vec![plan_id(id).map_err(WriterFailure::Internal)?],
             None => Vec::new(),
         };
         let (policy, repos) = (self.policy, &self.repos);
-        let name = "read_model.read_plan";
-        self.storage
-            .read(name, cancelled, wait, |tx| {
-                let installation = crate::write::authorize(tx, &credential, policy)?;
-                let batch = read_batch(tx, installation.id(), Target::Profiles(ids), repos)?;
-                Ok::<_, WriterFailure>(batch.builds.into_iter().next())
-            })?
-            .map(|build| build.map_or(AcceptedRead::Missing, |build| build.accepted))
+        self.storage.read(name, cancelled, wait, |tx| {
+            let installation = crate::write::authorize(tx, &credential, policy)?;
+            let tenant = installation.id();
+            let batch = read_batch(tx, tenant, Target::Profiles(ids), repos)?;
+            let plan = batch
+                .builds
+                .into_iter()
+                .next()
+                .map_or(AcceptedRead::Missing, |build| build.accepted);
+            convert(tx, tenant, plan)
+        })?
     }
 
     fn submit(

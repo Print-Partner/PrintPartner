@@ -33,6 +33,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 use tokio::sync::Semaphore;
 
@@ -202,6 +203,23 @@ async fn accepted_snapshot(
     id: &str,
     request: Request,
 ) -> Result<Box<Snapshot>, ExportFailure> {
+    ready_snapshot(read_accepted(app, id, request, ReadClient::read_plan).await?)
+}
+
+async fn read_accepted<T: Send + 'static>(
+    app: &App,
+    id: &str,
+    request: Request,
+    read: impl FnOnce(
+        &ReadClient,
+        pp_storage::read_model::Credential,
+        Option<i64>,
+        &AtomicBool,
+        Duration,
+    ) -> Result<T, WriterFailure>
+    + Send
+    + 'static,
+) -> Result<T, ExportFailure> {
     let presented = request
         .extensions()
         .get::<PresentedCredential>()
@@ -211,14 +229,22 @@ async fn accepted_snapshot(
         )))?;
     let build = build_id(id).and_then(|id| i64::try_from(id.get()).ok());
     let client = app.client.clone();
-    let read = app
-        .gate
+    app.gate
         .blocking(move |cancelled, wait| {
-            client.read_plan(presented.into_credential(), build, &cancelled, wait)
+            read(
+                &client,
+                presented.into_credential(),
+                build,
+                &cancelled,
+                wait,
+            )
         })
         .await
         .map_err(|_| ExportFailure::Interrupted)?
-        .map_err(ExportFailure::Storage)?;
+        .map_err(ExportFailure::Storage)
+}
+
+fn ready_snapshot(read: AcceptedRead) -> Result<Box<Snapshot>, ExportFailure> {
     match read {
         AcceptedRead::Ready { snapshot } => Ok(snapshot),
         AcceptedRead::Missing => Err(ExportFailure::BuildNotFound),

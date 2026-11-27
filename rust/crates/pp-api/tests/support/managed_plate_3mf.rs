@@ -7,11 +7,19 @@ use axum::{
     response::Response,
 };
 use pp_api::{accepted::AcceptedHttpConfig, exports::exports_router, plates::plates_router};
-use pp_storage::{Limits, WriterOwner};
+use pp_storage::{
+    Limits, WriterOwner, auth,
+    read_model::{
+        Credential,
+        planning::{FilamentInventoryKind, RoleFilamentAssignment},
+    },
+};
 use serde_json::{Value, json};
 use std::{
     io::{Cursor, Read},
     path::Path,
+    sync::atomic::AtomicBool,
+    time::Duration,
 };
 use zip::ZipArchive;
 
@@ -228,6 +236,75 @@ async fn ticket_t_58_three_mf_direct_golden_survives_restart() {
     owner.shutdown().unwrap();
     let (owner, router) = open(root);
     assert_eq!(direct_bytes(&router).await, before);
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn ticket_t_58_three_mf_direct_uses_saved_spoolman_color() {
+    let dir = data_dir();
+    let root = dir.path();
+    initialize_fixture(root);
+    let sql = rusqlite::Connection::open(root.join("print-partner.db")).unwrap();
+    let brief = json!({
+        "version": 1, "build_id": 1, "special_request": "",
+        "requirements": [], "evidence": [], "contributions": [],
+        "differences": [], "resolutions": {}, "role_filaments": [], "draft_review_blockers": [],
+        "created_at": "2026-08-20T12:00:00.000Z", "updated_at": "2026-08-20T12:00:00.000Z",
+    });
+    sql.execute(
+        "INSERT INTO app_settings(tenant_id,key,value) VALUES
+            ('default','build_planning.v1.1',?1), ('default','feature_toggles','{\"spoolman\":true}')
+         ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
+        [brief.to_string()],
+    ).unwrap();
+    let role = sql
+        .query_row("SELECT role FROM parts WHERE id=2", [], |row| row.get(0))
+        .unwrap();
+    let (owner, router) = open(root);
+    let saved = owner
+        .build_graph_with_policy(auth::AuthPolicy {
+            registration: auth::RegistrationPolicy::Open,
+            session_tenant: auth::SessionTenantPolicy::AccountTenant,
+            first_user: auth::FirstUserTenant::NewUser,
+        })
+        .unwrap()
+        .assign_role_filament(
+            Credential::Session(auth::Secret::new("read-fixture-secret".into())),
+            pp_storage::build_graph::PositiveId::new(1).unwrap(),
+            RoleFilamentAssignment {
+                role,
+                inventory_kind: FilamentInventoryKind::Spoolman,
+                inventory_id: Some("spoolman:local:filament:3".into()),
+                color_hex: "#12AB34".into(),
+                requested_brand: None,
+                requested_name: None,
+                substitution_confirmed: false,
+            },
+            None,
+            &AtomicBool::new(false),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+    assert!(saved.updated_parts > 0);
+    let material: (String, Option<String>) = sql
+        .query_row(
+            "SELECT filament_color_id,filament_custom_hex FROM parts WHERE id=2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(material, ("spoolman:local:filament:3".into(), None));
+    let bytes = direct_bytes(&router).await;
+    let model = read_members(
+        &bytes,
+        &["3D/3dmodel.model", "[Content_Types].xml", "_rels/.rels"],
+    );
+    assert!(
+        std::str::from_utf8(&model[0])
+            .unwrap()
+            .contains("displaycolor=\"#12AB34\""),
+        "assigned Spoolman color missing from the direct 3MF"
+    );
     owner.shutdown().unwrap();
 }
 

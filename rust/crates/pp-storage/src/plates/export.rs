@@ -5,7 +5,8 @@ use crate::{
     read_model::{AcceptedRead, Credential, ReadClient, Snapshot},
     write::authorize,
 };
-use std::{sync::atomic::AtomicBool, time::Duration};
+use rusqlite::{Transaction, params};
+use std::{collections::HashMap, sync::atomic::AtomicBool, time::Duration};
 
 pub struct ManagedExport {
     pub plan: Snapshot,
@@ -13,6 +14,12 @@ pub struct ManagedExport {
     pub plate_revision_number: i64,
     pub layout_digest: String,
     pub plates: Vec<ValidatedPlate>,
+    pub materials: HashMap<i64, AcceptedMaterial>,
+}
+
+pub struct AcceptedMaterial {
+    pub color_id: Option<String>,
+    pub custom_hex: Option<String>,
 }
 
 #[derive(Debug)]
@@ -89,14 +96,38 @@ impl ReadClient {
                 }) {
                     return Err(Failure::UnplacedUnits);
                 }
+                let materials = materials(tx, owner.id(), revision.plan_revision_id)
+                    .map_err(|error| Failure::Storage(WriterFailure::from(error)))?;
                 Ok(ManagedExport {
                     plan,
                     plate_revision_id: id,
                     plate_revision_number: revision.number,
                     layout_digest: revision.layout_digest,
                     plates,
+                    materials,
                 })
             })
             .map_err(Failure::Storage)?
     }
+}
+
+fn materials(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    plan_revision_id: i64,
+) -> rusqlite::Result<HashMap<i64, AcceptedMaterial>> {
+    tx.prepare(
+        "SELECT id,filament_color_id,filament_custom_hex FROM plan_revision_parts
+         WHERE tenant_id=?1 AND revision_id=?2 AND included",
+    )?
+    .query_map(params![tenant, plan_revision_id], |row| {
+        Ok((
+            row.get(0)?,
+            AcceptedMaterial {
+                color_id: row.get(1)?,
+                custom_hex: row.get(2)?,
+            },
+        ))
+    })?
+    .collect()
 }

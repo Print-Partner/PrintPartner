@@ -150,7 +150,19 @@ async fn ticket_t_58_three_mf_managed_archive_golden_survives_restart() {
         .query_row("SELECT COUNT(*) FROM durable_jobs", [], |r| r.get(0))
         .unwrap();
     assert_eq!(jobs, 0);
+    assert_eq!(
+        sql.execute(
+            "UPDATE parts SET filament_custom_hex='#12AB34' WHERE profile_id=1 AND relative_path='included.stl'",
+            [],
+        )
+        .unwrap(),
+        1
+    );
     drop(sql);
+    assert!(
+        archive_bytes(&router).await == before,
+        "live filament changed the archived revision"
+    );
 
     drop(router);
     owner.shutdown().unwrap();

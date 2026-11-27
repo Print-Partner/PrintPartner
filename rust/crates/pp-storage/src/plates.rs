@@ -23,7 +23,7 @@ mod artifacts;
 mod export;
 mod initialize;
 mod setup;
-pub use export::{ManagedExport, ManagedExportFailure};
+pub use export::{AcceptedMaterial, ManagedExport, ManagedExportFailure};
 pub use setup::build_id;
 
 use crate::{

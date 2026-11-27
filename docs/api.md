@@ -281,9 +281,10 @@ The archive streams as it is written, so the response is chunked and has no Cont
 The managed Plate export downloads a ZIP containing one 3MF model per Plate and
 `manifest.json`. Use the current `plate_revision_id` from the Plate workspace.
 The manifest records the accepted Plan and Plate revisions, printer references,
-Required-unit tokens, filament colors, and the verified Source revision and
-SHA-256 for each model object. Geometry uses the saved placement in millimeters;
-the models do not contain sliced toolpaths. A missing or stale revision, an
+Required-unit tokens, filament colors from the Plate's accepted Plan revision,
+and the verified Source revision and SHA-256 for each model object. Geometry uses
+the saved placement in millimeters; the models do not contain sliced toolpaths.
+A missing or stale revision, an
 explicitly unplaced unit, an invalid layout, or missing or changed Source
 geometry refuses the whole download. A valid session or API key is required.
 The Rust-only runtime generates the archive on a blocking worker and stores

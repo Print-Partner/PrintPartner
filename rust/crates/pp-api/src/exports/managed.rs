@@ -12,9 +12,9 @@ use pp_services::exports::three_mf::{Bundle, MAX_OBJECTS, Object, Refusal};
 use pp_storage::{
     WriterFailure,
     accepted_artifacts::{ArtifactFailure, ArtifactOpenMode, OpenedArtifact},
-    plates::{ManagedExport, ManagedExportFailure},
+    plates::{AcceptedMaterial, ManagedExport, ManagedExportFailure},
     production::geometry::{GeometryLimits, MeshFailure, ParsedMesh, dimensions_um, mesh},
-    read_model::{Artifact, Part, ReadClient, views::catalog_color},
+    read_model::{Artifact, ReadClient, views::catalog_color},
 };
 use serde::Deserialize;
 use serde_json::{Map, json};
@@ -161,7 +161,11 @@ fn render(
             {
                 return Err(Failure::Geometry(token.into()));
             }
-            let color = color(part);
+            let material = captured
+                .materials
+                .get(&part.revision_part_id)
+                .ok_or(Failure::Capture(ManagedExportFailure::InvalidLayout))?;
+            let color = color(material);
             let object_id = model
                 .object(Object {
                     token,
@@ -187,7 +191,7 @@ fn render(
             };
             units.push(json!({
                 "token": token, "object_name": name, "object_id": object_id,
-                "filament_color_id": part.filament_color_id, "filament_hex": color,
+                "filament_color_id": material.color_id, "filament_hex": color,
                 "source_id": source_id, "source_revision_id": source_revision_id,
                 "relative_path": relative_path, "artifact_sha256": expected_sha256,
             }));
@@ -220,11 +224,13 @@ fn render(
         .map_err(Failure::encode)
 }
 
-fn color(part: &Part) -> Option<&str> {
-    part.filament_custom_hex
+fn color(material: &AcceptedMaterial) -> Option<&str> {
+    material
+        .custom_hex
         .as_deref()
         .or_else(|| {
-            part.filament_color_id
+            material
+                .color_id
                 .as_deref()
                 .and_then(catalog_color)
                 .map(|color| color.hex.as_str())

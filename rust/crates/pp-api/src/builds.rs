@@ -1,3 +1,4 @@
+pub mod board;
 mod decisions;
 mod features;
 mod header;

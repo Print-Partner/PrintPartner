@@ -122,6 +122,9 @@ async function main() {
         await guarded(page.getByRole("dialog").waitFor(), "Accept gate did not open");
         await guarded(page.getByRole("dialog").getByText("Checking what Accept would change.").waitFor({ state: "hidden" }), "Accept preview did not settle");
       }
+      if (config.boardFlow && path === "/board") {
+        await guarded(page.getByText("No Build notes yet.").waitFor(), "Board was not empty");
+      }
       const file = join(outDir, name);
       if (display) {
         // The installed evidence tool captures the display; move its file into outDir.
@@ -143,6 +146,22 @@ async function main() {
         await guarded(page.screenshot({ path: file, fullPage }), `screenshot of ${path} failed`);
       }
       log(`shot ${path} -> ${file}`);
+      if (config.boardFlow && path === "/board") {
+        const { profiles } = await api("GET", "/api/v2/plans");
+        const build = profiles[0];
+        if (!build) throw new CaptureError("Board evidence needs a synthetic Build");
+        await guarded(page.getByRole("button", { name: "Add note" }).click(), "opening the Board form failed");
+        await guarded(page.getByLabel("Build", { exact: true }).selectOption(String(build.id)), "choosing the Build failed");
+        const body = "Check the fit before printing the remaining parts. Keep the spare clips with this Build.";
+        await guarded(page.getByLabel("Note", { exact: true }).fill(body), "typing the note failed");
+        await guarded(page.screenshot({ path: join(outDir, "board-create.png"), fullPage }), "Board form screenshot failed");
+        await guarded(page.getByRole("button", { name: "Save note" }).click(), "saving the note failed");
+        await guarded(page.getByText(body, { exact: true }).waitFor(), "the saved note did not appear");
+        if (await page.getByRole("link", { name: build.name }).getAttribute("href") !== `/builds/${build.id}`) {
+          throw new CaptureError("the saved note did not link to its Build");
+        }
+        await guarded(page.screenshot({ path: join(outDir, "board-populated.png"), fullPage }), "populated Board screenshot failed");
+      }
       if (config.applyProposal && path === "/apply") {
         await guarded(page.getByRole("button", { name: "Apply", exact: true }).click(), "applying the MCP proposal failed");
         await guarded(page.getByText("Applied:", { exact: false }).waitFor(), "Apply did not report success");

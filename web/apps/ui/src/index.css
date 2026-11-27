@@ -787,6 +787,7 @@ a.pp-header-button {
 
 .pp-field input,
 .pp-field select,
+.pp-field textarea,
 .pp-quantity {
   box-sizing: border-box;
   min-height: var(--touch-target-min);
@@ -796,6 +797,22 @@ a.pp-header-button {
   background: var(--surface-base);
   color: var(--text);
   font: inherit;
+}
+
+.pp-board-form {
+  display: grid;
+  gap: 12px;
+  max-width: 42rem;
+}
+
+.pp-board-form textarea {
+  padding: 8px 12px;
+  resize: vertical;
+}
+
+.pp-board-note {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 /* A file field's native button and name otherwise set its width, wider than a zoomed phone. */

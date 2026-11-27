@@ -70,6 +70,20 @@ pub(crate) const fn route(
 }
 
 pub const CLIENT_ROUTES: &[ClientRoute] = &[
+    route(
+        "listBoardNotes",
+        "GET",
+        "/api/v2/board/notes",
+        None,
+        "BoardFeed",
+    ),
+    route(
+        "createBoardNote",
+        "POST",
+        "/api/v2/board/notes",
+        Some("CreateBoardNoteRequest"),
+        "BoardNote",
+    ),
     route("listBuilds", "GET", "/api/v2/plans", None, "ProfileList"),
     route(
         "readBuild",
@@ -734,6 +748,18 @@ pub(crate) mod codegen {
             schemars::schema_for!(ProfileList<ProfileSummary>),
         )?;
         schema("ProfileSummary", schemars::schema_for!(ProfileSummary))?;
+        schema(
+            "BoardFeed",
+            schemars::schema_for!(crate::builds::board::BoardFeed),
+        )?;
+        schema(
+            "BoardNote",
+            schemars::schema_for!(crate::builds::board::BoardNote),
+        )?;
+        schema(
+            "CreateBoardNoteRequest",
+            schemars::schema_for!(crate::builds::board::CreateBoardNoteRequest),
+        )?;
         schema("ProfileLayers", schemars::schema_for!(ProfileLayers))?;
         schema(
             "CreateBuildRequest",
@@ -2684,6 +2710,7 @@ pub(crate) mod codegen {
         ];
         cases.extend(crate::auth::contract::fixtures()?);
         cases.extend(crate::mcp::proposal_fixtures()?);
+        cases.extend(crate::builds::board::fixtures()?);
         for (name, value) in [
             ("on", json!({"on": true})),
             ("off", json!({"on": false})),

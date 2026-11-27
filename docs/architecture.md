@@ -64,7 +64,7 @@ Order features no longer wait until Rust reaches parity with Node. The
 protection and Spoolman shortfall tasks in this program. These stay out:
 
 - Multi-user accounts, SaaS, hosted planning and tenant modes, Postgres, and the
-  community board. They have no target owner.
+  community board. The private Board is a local Build-note feed, not community posting.
 - Product analytics and default-on telemetry. Sentry stays opt-in.
 - Porting the old screens, and old-screen visual or route-shape parity
   ([ADR 0008](adr/0008-replace-the-old-screens.md)).
@@ -242,6 +242,7 @@ use the same operation interface. A transport must not repeat its policy.
 | Product Module choices and settings | `pp-storage` feature/settings modules; `pp-api` exposes effective state and off reasons; recheck before worker effects |
 | Sources, manifests, imports, scan, docs, sync | `pp-storage` catalog/scan/sync/upload transactions; `GET /sources/{id}/files` lists the current revision's snapshot through the read seam, and `GET /sources/{id}/thumbnail` renders and caches one STL (`pp-storage::source_files`, GRE-430); `pp-domain::step_assembly` reads and checks a STEP file's product structure and builds its part tree ([GRE-1007, GRE-1855](gre-1007-step-part-trees.md); the worker and route are GRE-1801 and GRE-1785); `pp-source` stages immutable bytes; `pp-services` decides sync policy; core composes checked fetch/watchers |
 | Builds, drafts, parts, order/customer/due-date fields | `pp-storage` build/draft modules own lifecycle, autosave receipts and order authority; `pp-services` holds extracted pure policy where useful |
+| Private Board | `pp-storage::build_graph::board` owns tenant-scoped notes in Rust-owned `app_settings` values; creating a note checks the Build in the writer transaction. `pp-api::builds::board` serves the replacement UI. No Node fallback or MCP tools |
 | Accept, proposals, accepted Plans, Required units, Plates | `pp-storage` publication owns one atomic acceptance transaction; UI and MCP share proposal/draft state |
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts, compensating undo and the farm log ([Farm log](farm-log.md)); drivers only supply observations |
 | Workflow, readiness, Today tasks, History | `pp-storage::read_model` owns consistent projections; task feed extends the GRE-415 workflow projection, not a second ranking engine (served by `read_model::build_workflow`, [Build workflow](build-workflow.md)); History includes legacy assistant decisions |

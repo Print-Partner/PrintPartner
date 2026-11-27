@@ -16,7 +16,7 @@ Print Partner exposes product operations to AI assistants over the Model Context
 Set `PP_ASSISTANT_WEB_DISCOVERY=1` on the Rust runtime and restart to enable `fetch_web_page`. Set `SEARCH_PROVIDER=brave` and `SEARCH_API_KEY` (or `BRAVE_API_KEY`) as well to enable `web_search`. Rust has no implicit search fallback. Tools that are off are not listed, and calling them by name returns `disabled`.
 
 - `web_search { query, site? }` sends the query and optional hostname filter to Brave. It returns up to five hits with titles, URLs and snippets. It does not fetch the hits.
-- `fetch_web_page { url }` reads HTML or plain text from a public HTTP(S) URL on its default port. It checks every destination, including redirects, and refuses HTTPS downgrades. It returns the final URL, optional title and up to 20,000 bytes of text, with `truncated` if text was omitted.
+- `fetch_web_page { url }` reads HTML or plain text from a public HTTP(S) URL on its default port. It checks every destination, including redirects, and refuses HTTPS downgrades. It uses the page's declared charset when available and refuses undecodable text. It returns the final URL, optional title and up to 20,000 bytes of text, with `truncated` if text was omitted.
 
 Both tools cap remote responses at 512 KiB, use a 12-second deadline and mark the returned text as untrusted evidence. Neither stores a page, adds guide evidence, runs instructions in a page, nor changes product data.
 

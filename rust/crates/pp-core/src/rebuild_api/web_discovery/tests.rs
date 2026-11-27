@@ -139,13 +139,45 @@ fn bounds_and_attributes_remote_text() {
     let page = page_text(
         hits[0].url.clone(),
         b"<title>Kit &amp; Guide</title><script>omit</script><p>Step one</p><p>Step two</p>",
-        true,
-    );
+        &mime::TEXT_HTML,
+    )
+    .unwrap();
     assert_eq!(page.title.as_deref(), Some("Kit & Guide"));
     assert_eq!(page.text, "Step one\n\nStep two");
-    let page = page_text(page.url, "é".repeat(MAX_TEXT).as_bytes(), false);
+    let page = page_text(page.url, "é".repeat(MAX_TEXT).as_bytes(), &mime::TEXT_PLAIN).unwrap();
     assert_eq!(page.text.len(), MAX_TEXT);
     assert!(page.truncated);
+}
+
+#[test]
+fn decodes_declared_page_charsets_without_corrupting_evidence() {
+    for (content_type, prefix) in [
+        ("text/html; charset=\"windows-1252\"", ""),
+        ("text/html", "<meta charset=windows-1252>"),
+        (
+            "text/html",
+            "<meta http-equiv=content-type content=\"text/html; charset=windows-1252\">",
+        ),
+    ] {
+        let response: Response = http::Response::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .body("")
+            .unwrap()
+            .into();
+        let mut bytes = prefix.as_bytes().to_vec();
+        bytes.extend_from_slice(b"<title>Caf\xe9</title><p>Price: \x801</p>");
+        let page = page_text(String::new(), &bytes, &page_type(&response).unwrap()).unwrap();
+        assert_eq!(page.title.as_deref(), Some("Café"));
+        assert_eq!(page.text, "Price: €1");
+    }
+    assert_eq!(
+        decode_page(b"\xff\xfec\x00a\x00f\x00\xe9\x00", &mime::TEXT_PLAIN).unwrap(),
+        "café"
+    );
+    assert_eq!(
+        decode_page(b"Caf\xe9", &mime::TEXT_PLAIN),
+        Err(Error::Encoding)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -155,7 +187,7 @@ async fn fake_responses_obey_body_limit_deadline_and_capacity() {
         .body(vec![b'x'; MAX_BODY + 1])
         .unwrap()
         .into();
-    assert_eq!(html_type(&response), Ok(false));
+    assert_eq!(page_type(&response), Ok(mime::TEXT_PLAIN_UTF_8));
     assert_eq!(body(response).await, Err(Error::TooLarge));
     let response = http::Response::builder()
         .status(503)

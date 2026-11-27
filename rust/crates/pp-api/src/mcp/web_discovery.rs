@@ -42,6 +42,7 @@ pub enum Error {
     Busy,
     TooLarge,
     ContentType,
+    Encoding,
     Unavailable,
 }
 
@@ -69,6 +70,10 @@ impl Error {
             Self::ContentType => (
                 "unsupported_content",
                 "Only HTML and plain text pages can be fetched.",
+            ),
+            Self::Encoding => (
+                "unsupported_encoding",
+                "The page could not be decoded with its declared charset or UTF-8.",
             ),
             Self::Unavailable => (
                 "unavailable",

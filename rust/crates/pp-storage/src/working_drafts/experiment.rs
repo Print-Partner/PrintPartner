@@ -33,6 +33,7 @@ pub(crate) fn copy(
     inputs: &[Value],
 ) -> Result<i64> {
     let parts = crate::plan_publication::validate_projection(tx, tenant, source, revision)?;
+    crate::plan_publication::material::copy_experiment_colors(tx, tenant, source, target, &parts)?;
     let parts: Vec<_> = parts
         .into_iter()
         .map(|stored| {

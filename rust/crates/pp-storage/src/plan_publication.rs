@@ -1,3 +1,4 @@
+pub(crate) mod material;
 mod model;
 pub mod preview;
 pub(crate) mod snapshot;
@@ -1594,6 +1595,7 @@ pub(crate) fn publish_in_transaction(
     )?;
     let mut projection_ids = HashMap::new();
     let mut revision_ids = HashMap::new();
+    let saved_colors = material::saved_colors(tx, tenant, profile, &prepared.parts)?;
     for p in &prepared.parts {
         let id = num(p, "id")?;
         let mut projected = projection(p)?;
@@ -1606,7 +1608,14 @@ pub(crate) fn publish_in_transaction(
         immutable["tenantId"] = json!(tenant);
         immutable["revisionId"] = json!(revision);
         immutable["projectionPartId"] = json!(new_id);
-        revision_ids.insert(id, insert_part(tx, "plan_revision_parts", &immutable)?);
+        let revision_part = insert_part(tx, "plan_revision_parts", &immutable)?;
+        if let Some(hex) = saved_colors.get(p) {
+            tx.execute(
+                "INSERT INTO plan_revision_spoolman_colors(revision_part_id, color_hex) VALUES(?,?)",
+                params![revision_part, hex],
+            )?;
+        }
+        revision_ids.insert(id, revision_part);
     }
     write_remap(tx, tenant, production, &remapping, &projection_ids)?;
     for a in &prepared.assignments {

@@ -1870,13 +1870,9 @@ fn ticket_t_7_migrations_preserves_refused_inputs() {
         &refused_wal_input("30"),
         "Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to",
     );
-    let newer = if cfg!(feature = "desktop_rebuild") {
-        "52"
-    } else {
-        "40"
-    };
+    let newer = (schema::CURRENT_VERSION + 1).to_string();
     assert_refused(
-        &refused_wal_input(newer),
+        &refused_wal_input(&newer),
         &format!("newer than supported version {}", schema::CURRENT_VERSION),
     );
     assert_refused(
@@ -3149,6 +3145,8 @@ fn omit_source_schema(graph: &mut SchemaGraph) {
                     || name == "pending_actions"
                     || name == "pending_actions_open"
                     || name == "sqlite_autoindex_pending_actions_1"
+                    || name == "plan_revision_spoolman_colors"
+                    || name.starts_with("trg_plan_revision_spoolman_colors_")
                     || name == "spoolman_deductions"
                     || name == "spoolman_deductions_burst"
                     || name == "spoolman_deductions_link"

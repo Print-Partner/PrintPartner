@@ -30,6 +30,9 @@ const TOKEN: &str = "ppu_574c8d5f92624f029e21705a8ebb8a1b";
 const PLATE: &str = "plate_e7bb4d93583fcd4cfcebb2dfc6f8e503";
 const COOKIE: Option<&str> = Some("pp_session=read-fixture-secret");
 
+#[path = "managed_spoolman_3mf.rs"]
+mod managed_spoolman;
+
 fn open(root: &Path) -> (WriterOwner, Router) {
     let owner = WriterOwner::open(root, Limits::default()).unwrap().0;
     let config = AcceptedHttpConfig::from_startup(loopback::ORIGIN, "default", Some("1")).unwrap();

@@ -17,7 +17,6 @@ use super::{
     source_roles::{self, brief_proposal, plan},
     write_result::{Code, Refusal, writer_failure},
 };
-use crate::loopback::PresentedCredential;
 use pp_services::mcp_domain::ToolInvocation;
 use pp_storage::{
     build_graph::PositiveId,
@@ -79,10 +78,6 @@ const MODULES_INVALID: Refusal = Refusal::new(
     "The stored Module settings are invalid. Repair them in Settings.",
 );
 const INTERNAL: Refusal = Refusal::new(Code::Internal, "Storage failed. Nothing was written.");
-const UNAVAILABLE: Refusal = Refusal::new(
-    Code::Unavailable,
-    "Storage is busy. Nothing was written; try again.",
-);
 
 impl CheckoffDomain {
     pub(super) fn role_filament_propose(
@@ -163,9 +158,8 @@ impl CheckoffDomain {
         match assignment.inventory_kind {
             FilamentInventoryKind::Catalog => check_catalog(assignment),
             FilamentInventoryKind::Spoolman => {
-                self.check(build, true)?;
                 let (integration, filament) = spoolman_item(assignment)?;
-                let inventory = self.inventory(integration)?;
+                let inventory = self.inventory(build, integration)?;
                 check_spoolman(&inventory, assignment, filament, spool)
             }
             FilamentInventoryKind::Custom | FilamentInventoryKind::Substitute => Ok(()),
@@ -173,7 +167,7 @@ impl CheckoffDomain {
     }
 
     /// The Build's brief, and Spoolman on for it when `spoolman`, read with
-    /// the caller's key.
+    /// the caller's credential.
     fn check(&self, build: PositiveId, spoolman: bool) -> Result<(), Refusal> {
         let credential = self.caller().map_err(|_| INTERNAL)?.into_credential();
         self.builds
@@ -183,15 +177,12 @@ impl CheckoffDomain {
 
     /// One read of `integration`'s inventory. A missing or disabled
     /// integration, no reader, or a failed read is `spoolman_unavailable`.
-    fn inventory(&self, integration: &str) -> Result<Inventory, Refusal> {
-        let tenant = self.tenant()?;
-        let Ok(found) = self
-            .farm
-            .modules
-            .spoolman_integration(&tenant, integration, self.wait)
-        else {
-            return Err(UNAVAILABLE);
-        };
+    fn inventory(&self, build: PositiveId, integration: &str) -> Result<Inventory, Refusal> {
+        let credential = self.caller().map_err(|_| INTERNAL)?.into_credential();
+        let found = self
+            .builds
+            .role_filament_integration(credential, build, integration.to_owned(), self.wait)
+            .map_err(|error| storage_refusal(&error))?;
         let (Some(integration), Some(reader)) = (
             found.filter(|found| found.enabled),
             self.farm.inventory.clone(),
@@ -203,13 +194,6 @@ impl CheckoffDomain {
         runtime
             .block_on(reader.read(integration))
             .ok_or(SPOOLMAN_UNAVAILABLE)
-    }
-
-    fn tenant(&self) -> Result<String, Refusal> {
-        match self.caller() {
-            Ok(PresentedCredential::ApiKey { tenant, .. }) => Ok(tenant),
-            _ => Err(INTERNAL),
-        }
     }
 }
 

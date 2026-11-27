@@ -90,6 +90,58 @@ pub(super) struct PreparedManifestCommand {
     kit: Option<KitManifest>,
 }
 impl BuildGraphClient {
+    fn observe_manifest_pair(
+        &self,
+        captured: &CapturedManifestGraph,
+        budget: &mut PreparationBudget<'_>,
+    ) -> Result<(ObservedBuilder, ObservedBuilder), ReadFailure> {
+        let reads = self.manifest_reads.as_deref();
+        Ok((
+            observation::observe(captured, reads, budget)?,
+            observation::observe(captured, reads, budget)?,
+        ))
+    }
+
+    pub fn plan_option_groups(
+        &self,
+        credential: read_model::Credential,
+        build: PositiveId,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<ManifestOptionsOutcome, crate::WriterFailure> {
+        let build = build.get() as i64;
+        let read = || {
+            self.settings
+                .read("manifest_options.groups", cancelled, wait, |tx| {
+                    let tenant = crate::write::authorize(tx, &credential, self.policy)?;
+                    observation::capture(tx, tenant.id(), build).map_err(crate::WriterFailure::from)
+                })?
+        };
+        for _ in 0..2 {
+            let Some(captured) = read()? else {
+                return Ok(ManifestOptionsOutcome::MissingBuild);
+            };
+            let result = PreparationBudget::new(cancelled, self.manifest_limits)
+                .and_then(|mut budget| self.observe_manifest_pair(&captured, &mut budget));
+            let (first, second) = match result {
+                Ok(pair) => pair,
+                Err(ReadFailure::Cancelled) => return Err(crate::WriterFailure::Cancelled),
+                Err(error) => {
+                    return Ok(ManifestOptionsOutcome::ObservationFailed {
+                        detail: error.to_string(),
+                    });
+                }
+            };
+            if first.stamps == second.stamps && read()?.as_ref() == Some(&captured) {
+                let stored = captured.stored_selections();
+                let mut body = Vec::new();
+                first.builder.write_option_groups(&stored, &mut body);
+                return Ok(ManifestOptionsOutcome::Builder(ManifestJsonBody(body)));
+            }
+        }
+        Ok(ManifestOptionsOutcome::StaleObservation)
+    }
+
     pub(super) fn execute_observed_manifest(
         &self,
         credential: read_model::Credential,
@@ -141,14 +193,7 @@ impl BuildGraphClient {
                 _ => None,
             };
             let mut budget = PreparationBudget::new(&cancelled, self.manifest_limits)?;
-            let mut observe = || -> std::result::Result<_, ReadFailure> {
-                let first =
-                    observation::observe(&captured, self.manifest_reads.as_deref(), &mut budget)?;
-                let second =
-                    observation::observe(&captured, self.manifest_reads.as_deref(), &mut budget)?;
-                Ok((first, second))
-            };
-            let (observed, rechecked) = match observe() {
+            let (observed, rechecked) = match self.observe_manifest_pair(&captured, &mut budget) {
                 Ok(pair) => pair,
                 Err(ReadFailure::Cancelled) => return Err(Failure::Cancelled.into()),
                 Err(error) => {
@@ -224,6 +269,13 @@ pub(super) fn read(
     if !super::build_exists(tx, tenant, build)? {
         return Ok(ManifestOptionsOutcome::MissingBuild);
     }
+    Ok(ManifestOptionsOutcome::Kit {
+        profile_id: build,
+        kit: Box::new(read_kit(tx, tenant, build)?),
+    })
+}
+
+pub(crate) fn read_kit(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<KitManifest> {
     let raw: Option<String> = tx
         .query_row(
             "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
@@ -231,13 +283,9 @@ pub(super) fn read(
             |row| row.get(0),
         )
         .optional()?;
-    let kit = raw
+    Ok(raw
         .and_then(|raw| KitManifest::from_stored(&raw).ok())
-        .unwrap_or_default();
-    Ok(ManifestOptionsOutcome::Kit {
-        profile_id: build,
-        kit: Box::new(kit),
-    })
+        .unwrap_or_default())
 }
 
 pub(super) fn finish(

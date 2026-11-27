@@ -20,6 +20,7 @@ import { LibraryJobsProvider } from "./library/libraryJobs";
 import { MatchReview } from "./farm/MatchReview";
 import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
+import { ApplyPanel } from "./proposals/ApplyPanel";
 import { DestinationScreen, NotFound, StatesSpecimen } from "./screen/screens";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { PRINTER_DISPLAY_STATES, PrinterStatus } from "./status/PrinterStatus";
@@ -63,6 +64,7 @@ export const routes: RouteObject[] = [
     ),
     children: [
       { index: true, element: <Navigate to="/today" replace /> },
+      { path: "apply", element: <ApplyPanel /> },
       ...DESTINATIONS.map((d) => ({
         path: d.path.slice(1),
         element:

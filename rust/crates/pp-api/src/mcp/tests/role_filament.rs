@@ -308,6 +308,30 @@ async fn mcp_assign_role_filament_checks_a_spoolman_filament_and_spool_against_s
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_spoolman_proposal_applies_with_a_ui_session() {
+    let seeded = spoolman_on().await;
+    let (proposal, error) = json_call(
+        &seeded.server,
+        &seeded.headers,
+        TOOL,
+        json!({
+            "plan_id": seeded.build,
+            "assignment": spoolman("spoolman:sm-1:filament:3", "#112233", Some("spoolman:sm-1:spool:7")),
+        }),
+    )
+    .await;
+    assert!(!error, "{proposal}");
+    let id = proposal["action"]["id"].as_str().unwrap();
+    let (status, result) =
+        super::session_keys::ui(&seeded.server, Method::POST, &format!("/{id}/apply")).await;
+    assert_eq!((status, result), (200, json!("applied")));
+    assert_eq!(
+        role_defaults(&seeded)["accent"]["spoolman_spool_id"],
+        "spoolman:sm-1:spool:7"
+    );
+}
+
 /// Spoolman on for the user and off in the Build's Plan override, as
 /// Checkoff reads it: no Spoolman assignment proposes or confirms.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

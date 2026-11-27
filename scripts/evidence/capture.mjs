@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CaptureError, guarded, installReport, makeApi } from "./safety.mjs";
-import { STEPS } from "./steps.mjs";
+import { stageApplyProposal, STEPS } from "./steps.mjs";
 
 installReport();
 
@@ -104,6 +104,7 @@ async function main() {
     for (const step of steps) {
       log(`step ${step.name}:${step.arg} ${await STEPS[step.name](api, step.arg, { root, coreOrigin })}`);
     }
+    if (config.applyProposal) await stageApplyProposal(api, { root, coreOrigin });
 
     for (const { path, file: name } of shots) {
       await guarded(page.goto(new URL(path, uiOrigin).href), `opening ${path} failed`);
@@ -138,6 +139,17 @@ async function main() {
         await guarded(page.screenshot({ path: file, fullPage }), `screenshot of ${path} failed`);
       }
       log(`shot ${path} -> ${file}`);
+      if (config.applyProposal && path === "/apply") {
+        await guarded(page.getByRole("button", { name: "Apply", exact: true }).click(), "applying the MCP proposal failed");
+        await guarded(page.getByText("Applied:", { exact: false }).waitFor(), "Apply did not report success");
+        const { profiles } = await api("GET", "/api/v2/plans");
+        if (profiles.filter((build) => build.name === "Evidence Build from MCP").length !== 1) {
+          throw new CaptureError("the staged Build was not created exactly once");
+        }
+        const confirmed = join(outDir, "apply-confirmed.png");
+        await guarded(page.screenshot({ path: confirmed, fullPage }), "screenshot of Apply confirmation failed");
+        log(`shot applied proposal -> ${confirmed}`);
+      }
     }
   } finally {
     await browser.close();

@@ -22,9 +22,10 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
+import { proposalsQuery } from "../core/proposals";
 import { readCore, writeCore } from "../core/rust";
 import { newKey, resendable } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
@@ -824,6 +825,7 @@ function AcceptGate({
   onAccepted: (receipt: AcceptDraftReceipt) => void;
 }) {
   const offline = useConnection() === "offline";
+  const client = useQueryClient();
   const draftId = workspace.draft.draft_id;
   const [key, setKey] = useState(newKey);
   const reasonId = useId();
@@ -848,6 +850,12 @@ function AcceptGate({
       }
     },
   });
+  const stage = useMutation({
+    mutationFn: (previewed: DraftAcceptPreview) =>
+      writeCore("stageDraftProposal", { id, draft_id: draftId }, acceptBody(previewed)),
+    retry: false,
+    onSettled: () => client.invalidateQueries({ queryKey: proposalsQuery.queryKey }),
+  });
   // A failed re-preview keeps the old data; that preview is no longer what Accept checks.
   const data = preview.isError ? undefined : preview.data;
   // A match clears the last Accept refusal; the next Accept answers against a new preview.
@@ -857,7 +865,7 @@ function AcceptGate({
     data,
     needsMatch: match.needed,
     offline,
-    accepting: accept.isPending,
+    accepting: accept.isPending || stage.isPending,
   });
   return (
     <Dialog title="Accept this draft" onClose={onClose} className="pp-gate">
@@ -896,9 +904,31 @@ function AcceptGate({
           {refusalText(accept.error, "accept")}
         </p>
       )}
+      {stage.isError && (
+        <p role="alert" className="pp-field-error">
+          {refusalText(stage.error)}
+        </p>
+      )}
+      {stage.isSuccess && (
+        <p role="status">
+          Proposal staged.{" "}
+          <Link to="/apply" className="pp-link">
+            Open Apply
+          </Link>
+          .
+        </p>
+      )}
       <div className="pp-dialog-actions">
         <button type="button" className="pp-button" onClick={onClose}>
           Cancel
+        </button>
+        <button
+          type="button"
+          className="pp-button"
+          disabled={Boolean(blocked) || stage.isSuccess}
+          onClick={() => data && stage.mutate(data)}
+        >
+          Stage for Apply
         </button>
         <button
           type="button"

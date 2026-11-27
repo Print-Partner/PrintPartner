@@ -372,7 +372,7 @@ fn snapshots(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<PlanS
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-fn decisions(
+pub(super) fn decisions(
     tx: &Transaction<'_>,
     tenant: &str,
     build: i64,

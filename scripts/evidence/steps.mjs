@@ -345,6 +345,34 @@ async function mcpReceipt(api, id, { root, coreOrigin }) {
   }
 }
 
+export async function stageApplyProposal(api, { root, coreOrigin }) {
+  const { Client, Transport } = mcpSdk(root);
+  const { key } = await api("POST", "/settings/api-keys", {});
+  const headers = { Authorization: `Bearer ${key}` };
+  const clients = ["/mcp", "/api/v1/mcp"].map((path) => ({
+    client: new Client({ name: "Evidence assistant", version: "1.0.0" }),
+    transport: new Transport(new URL(path, coreOrigin), { requestInit: { headers } }),
+  }));
+  try {
+    for (const { client, transport } of clients) {
+      await guarded(client.connect(transport), "MCP initialize failed");
+    }
+    const { value, isError } = await callTool(clients[0].client, "propose_create_build", {
+      name: "Evidence Build from MCP",
+      request: "Review a synthetic Build in the Apply panel.",
+    });
+    const id = value.action?.id;
+    if (isError || !id) throw new CaptureError("MCP did not stage the synthetic Build");
+    for (const { client, transport } of clients) {
+      const { value: pending } = await callTool(client, "list_pending_actions", {});
+      expectSame("MCP pending IDs", pending.actions?.map((action) => action.id), [id]);
+      console.log(`capture: list_pending_actions ${transport === clients[0].transport ? "/mcp" : "/api/v1/mcp"} -> [${id}]`);
+    }
+  } finally {
+    for (const { client } of clients) await client.close().catch(() => {});
+  }
+}
+
 // Named setup steps. Each takes a Build ID; run.py checks names and arguments.
 export const STEPS = {
   "settle-reconciliation": settleReconciliation,

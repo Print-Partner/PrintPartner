@@ -15,7 +15,7 @@ use pp_api::{
     history::history_router,
     integrations::integrations_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
-    mcp::{McpClients, McpFarm, McpHttpConfig, mcp_router},
+    mcp::{McpClients, McpFarm, McpHttpConfig, product_proposal_routes},
     modules::modules_router,
     planning::planning_router,
     plates::plates_router,
@@ -464,21 +464,24 @@ fn read_router_with_updates(
         policy,
         config.clone(),
     )?);
-    let mcp = mcp_router(
-        mcp_config(origin, api_key_tenant, runtime.server)?,
-        auth_client.clone(),
-        McpClients {
-            builds: builds_client,
-            workflow: workflow_client,
-            drafts: drafts_client,
-            planning: planning_client,
-            progress: checkoff_client,
-            accepted: accepted_client,
-            farm: mcp_farm(farm_clients, runtime.farm, settings)?,
-        },
-    );
+    let data = admin_files.data_directory();
+    let review_observer = crate::review_observations::SnapshotReviewObserver::new(
+        data.join("repos"),
+        // ast-grep-ignore: no-writer-family-literal -- Observe existing thumbnails without writing them.
+        Some(data.join("thumbs")),
+    )?;
+    let proposal_clients = McpClients {
+        builds: builds_client,
+        workflow: workflow_client,
+        drafts: drafts_client,
+        planning: planning_client,
+        progress: checkoff_client,
+        accepted: accepted_client,
+        review_observer: Some(Arc::new(review_observer)),
+        farm: mcp_farm(farm_clients, runtime.farm, settings)?,
+    };
     Ok(Some(
-        auth_router(auth.http, auth_client, auth.providers, auth.mail)
+        auth_router(auth.http, auth_client.clone(), auth.providers, auth.mail)
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
@@ -491,8 +494,23 @@ fn read_router_with_updates(
             .merge(events)
             .merge(checkoff)
             .merge(plates)
-            .merge(mcp),
+            .merge(product_proposal_routes(
+                config,
+                mcp_config(origin, api_key_tenant, runtime.server)?,
+                auth_client,
+                proposal_clients,
+            )),
     ))
+}
+
+impl pp_api::mcp::McpReviewObserver for crate::review_observations::SnapshotReviewObserver {
+    fn observe(
+        &self,
+        snapshot: &pp_storage::read_model::Snapshot,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<pp_storage::read_model::views::ReviewObservations> {
+        self.review_observations(snapshot, cancelled)
+    }
 }
 
 /// Compose completed draft read, write and Accept routers from one
@@ -1099,9 +1117,13 @@ mod tests {
             && body["parent_build_id"].as_i64().is_some();
         let missing_refresh_draft =
             route.name == "refreshDraft" && status == 409 && body["code"] == "draft_changed";
+        let missing_proposed_draft = route.name == "stageDraftProposal"
+            && status == 409
+            && body["detail"] == "Selected Working Plan not found";
         status == 200
             || duplicated
             || missing_refresh_draft
+            || missing_proposed_draft
             || handler_not_found(status, body)
             || stale
             || no_layers
@@ -1114,8 +1136,8 @@ mod tests {
     }
 
     /// The sample bodies name no stored draft, snapshot, link, burst, History entry,
-    /// print, queue item or Source to set as a Build's base, so those handlers answer
-    /// their own 404 with a code or detail.
+    /// print, proposal, queue item or Source to set as a Build's base, so those
+    /// handlers answer their own 404 with a code or detail.
     fn handler_not_found(status: u16, body: &Value) -> bool {
         const CODES: [&str; 8] = [
             "integration_not_found",
@@ -1127,7 +1149,7 @@ mod tests {
             "source_not_found",
             "deduction_not_found",
         ];
-        const DETAILS: [&str; 7] = [
+        const DETAILS: [&str; 8] = [
             "beds[0]: Checkoff link not found",
             "Project not found",
             "Checkoff burst not found",
@@ -1135,6 +1157,7 @@ mod tests {
             "Unattributed print not found",
             "Job not found",
             "Queue item not found",
+            "Proposal not found",
         ];
         status == 404
             && (CODES.iter().any(|code| body["code"] == *code)

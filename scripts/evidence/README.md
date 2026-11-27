@@ -28,6 +28,7 @@ It prints each PNG path and the command to publish them at the end, and exits 1 
 | `--farm-send-queue` | Seed a queued send and an interrupted send for two Builds. Rust reads these as Not sent and Outcome unknown. Use with `--module farm --shot /farm`. |
 | `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. Only this run's files are listed. |
 | `--review-plan` | Open Review and accept before capturing each Plan shot. |
+| `--apply-proposal` | With `--module orders --shot /apply`, stage a synthetic Build through MCP, verify that both MCP aliases list it, and capture the Apply panel before and after applying it. |
 | `--full-page` | Capture the whole scrolled page, not only the 1440x900 viewport. |
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |

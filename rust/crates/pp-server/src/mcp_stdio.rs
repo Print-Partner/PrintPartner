@@ -212,7 +212,7 @@ const REFUSAL_CODES: &str = "unauthorized unavailable outcome_unknown internal b
     module_settings_invalid idempotency_record_invalid arguments_required not_found not_open \
     parts_required invalid_edit part_not_found edit_empty invalid_digest draft_changed \
     base_changed accepted_baseline_required edit_refused invalid_plan_id plan_not_found \
-    no_planning_brief invalid_roles planning_brief_invalid invalid_role_assignment \
+    no_planning_brief stale_plan invalid_roles planning_brief_invalid invalid_role_assignment \
     invalid_source_role evidence_not_found multiple_structural_bases farm_module_off \
     invalid_filament_assignment substitution_unconfirmed catalog_filament_not_found \
     catalog_color_mismatch catalog_name_mismatch catalog_brand_mismatch spoolman_module_off \

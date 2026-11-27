@@ -89,6 +89,10 @@ pub(crate) struct Gate {
 }
 
 impl Gate {
+    pub(crate) fn wait(&self) -> Duration {
+        self.config.wait
+    }
+
     /// `None` unless `PP_DESKTOP_REBUILD` was exactly `1` or `true`.
     pub(crate) fn open(config: AcceptedHttpConfig) -> Option<Self> {
         config.enabled.then(|| Self {

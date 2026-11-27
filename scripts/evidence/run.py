@@ -244,6 +244,8 @@ def parse_args(argv):
     parser.add_argument("--farm-send-queue", action="store_true",
                         help="seed queued and interrupted sends for two synthetic Builds before startup")
     parser.add_argument("--review-plan", action="store_true", help="open Review and accept on Plan shots")
+    parser.add_argument("--apply-proposal", action="store_true",
+                        help="stage an MCP proposal, capture Apply, then apply it and capture the result")
     parser.add_argument("--full-page", action="store_true", help="capture the whole scrolled page")
     parser.add_argument("--rebuild", action="store_true", help="build even if the checkout is unchanged")
     parser.add_argument("--display", nargs="?", const=os.environ.get("EVIDENCE_DISPLAY", ":99"),
@@ -258,6 +260,8 @@ def parse_args(argv):
         args.shot = ["/builds"]
     if not args.shot:
         parser.error("give at least one --shot")
+    if args.apply_proposal and (args.shot.count("/apply") != 1 or "orders" not in args.module):
+        parser.error("--apply-proposal needs one --shot /apply and --module orders")
     return args
 
 
@@ -365,7 +369,8 @@ def display_geometry(name):
 
 def capture(args, origin, ui_origin, credential, out_dir, node, browser_tmp):
     config = {"root": str(ROOT), "coreOrigin": origin, "uiOrigin": ui_origin, "shots": [{"path": path, "file": shot_name(path)} for path in args.shot],
-              "emptyStates": args.empty_states, "reviewPlan": args.review_plan, "steps": args.step, "outDir": str(out_dir), "fullPage": args.full_page, "display": None}
+              "emptyStates": args.empty_states, "reviewPlan": args.review_plan, "applyProposal": args.apply_proposal,
+              "steps": args.step, "outDir": str(out_dir), "fullPage": args.full_page, "display": None}
     if args.display:
         width, height = display_geometry(args.display)
         config["display"] = {"name": args.display, "width": width, "height": height, "evidenceBin": EVIDENCE_BIN}
@@ -517,6 +522,8 @@ def main(argv=None):
         return 1
     # Only this run's files: --out may hold PNGs from earlier runs.
     shots = list(dict.fromkeys(out_dir / shot_name(path) for path in args.shot))
+    if args.apply_proposal:
+        shots.append(out_dir / "apply-confirmed.png")
     for shot in shots:
         say(f"saved {shot}")
     if args.self_test:

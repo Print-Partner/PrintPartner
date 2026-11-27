@@ -302,6 +302,23 @@ fn builder_bytes_equal_node_for_declared_inferred_fallback_and_community_sources
         json(&observed),
         std::str::from_utf8(NODE_BUILDER).unwrap().trim_end()
     );
+    let mut options = Vec::new();
+    observed
+        .builder
+        .write_option_groups(&captured.stored_selections(), &mut options);
+    let options: serde_json::Value = serde_json::from_slice(&options).unwrap();
+    let node: serde_json::Value = serde_json::from_slice(NODE_BUILDER).unwrap();
+    assert_eq!(options["plan_id"], 1);
+    assert_eq!(options["selections"], serde_json::json!({"zeta": "z1"}));
+    assert_eq!(options["option_groups"], node["merged_option_groups"]);
+    assert_eq!(
+        options["sources"][0],
+        serde_json::json!({
+            "source_id": 1, "name": "Base Frame", "layer_type": "base",
+            "exists": true, "scanned_part_count": 3
+        })
+    );
+    assert_eq!(options["sources"][2]["exists"], false);
     assert_eq!(
         observed
             .stamps

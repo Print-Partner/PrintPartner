@@ -464,6 +464,12 @@ fn read_router_with_updates(
         policy,
         config.clone(),
     )?);
+    let data = admin_files.data_directory();
+    let review_observer = crate::review_observations::SnapshotReviewObserver::new(
+        data.join("repos"),
+        // ast-grep-ignore: no-writer-family-literal -- Observe existing thumbnails without writing them.
+        Some(data.join("thumbs")),
+    )?;
     let mcp = mcp_router(
         mcp_config(origin, api_key_tenant, runtime.server)?,
         auth_client.clone(),
@@ -474,6 +480,7 @@ fn read_router_with_updates(
             planning: planning_client,
             progress: checkoff_client,
             accepted: accepted_client,
+            review_observer: Some(Arc::new(review_observer)),
             farm: mcp_farm(farm_clients, runtime.farm, settings)?,
         },
     );
@@ -493,6 +500,16 @@ fn read_router_with_updates(
             .merge(plates)
             .merge(mcp),
     ))
+}
+
+impl pp_api::mcp::McpReviewObserver for crate::review_observations::SnapshotReviewObserver {
+    fn observe(
+        &self,
+        snapshot: &pp_storage::read_model::Snapshot,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<pp_storage::read_model::views::ReviewObservations> {
+        self.review_observations(snapshot, cancelled)
+    }
 }
 
 /// Compose completed draft read, write and Accept routers from one

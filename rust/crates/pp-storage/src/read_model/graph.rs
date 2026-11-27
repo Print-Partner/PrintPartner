@@ -647,6 +647,44 @@ fn canonical_part(r: &Row) -> Result<String> {
     let part = DraftPart::new(Value::Object(scalar), r.2.clone());
     String::from_utf8(part.json_fields(&fields, false)).map_err(Into::into)
 }
+pub(super) fn verified_revision_parts(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    revision_id: i64,
+    digest: &str,
+    b: &mut Budget,
+) -> Result<Vec<Row>> {
+    let mut revision_parts = rows(
+        tx,
+        "plan_revision_parts",
+        "revision_id=?1",
+        &[&revision_id],
+        "revision",
+        b,
+    )?;
+    revision_parts.sort_by_key(|r| r.n("id").unwrap_or(0));
+    let mut canonical = Vec::new();
+    for r in &revision_parts {
+        owned(r, tenant, None, "revision")?;
+        check(
+            r.n("id")? > 0,
+            "revision",
+            "Accepted Plan revision Part ID is corrupt",
+        )?;
+        canonical.push(canonical_part(r)?);
+    }
+    canonical.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    check(
+        sha(&format!(
+            "{{\"format\":\"plan-revision-parts-v1\",\"parts\":[{}]}}",
+            canonical.join(",")
+        )) == digest,
+        "revision_digest",
+        "Accepted Plan revision digest is corrupt",
+    )?;
+    Ok(revision_parts)
+}
+
 pub(crate) fn read(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -734,34 +772,8 @@ pub(crate) fn read(
         )?;
         owned(&r, tenant, Some(id), "revision")?;
     }
-    let mut revision_parts = rows(
-        tx,
-        "plan_revision_parts",
-        "revision_id=?1",
-        &[&revision_id],
-        "revision",
-        b,
-    )?;
-    revision_parts.sort_by_key(|r| r.n("id").unwrap_or(0));
-    let mut canonical = Vec::new();
-    for r in &revision_parts {
-        owned(r, tenant, None, "revision")?;
-        check(
-            r.n("id")? > 0,
-            "revision",
-            "Accepted Plan revision Part ID is corrupt",
-        )?;
-        canonical.push(canonical_part(r)?);
-    }
-    canonical.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
-    check(
-        sha(&format!(
-            "{{\"format\":\"plan-revision-parts-v1\",\"parts\":[{}]}}",
-            canonical.join(",")
-        )) == rev.s("snapshot_digest")?,
-        "revision_digest",
-        "Accepted Plan revision digest is corrupt",
-    )?;
+    let revision_parts =
+        verified_revision_parts(tx, tenant, revision_id, rev.s("snapshot_digest")?, b)?;
     let kind = rev.s("provenance_kind")?;
     let mut inputs = Vec::new();
     let mut format1 = false;

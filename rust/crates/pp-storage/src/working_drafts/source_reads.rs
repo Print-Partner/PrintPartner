@@ -448,4 +448,5 @@ impl StlInventory for Inventory {
 }
 
 mod mcp_documents;
+pub(crate) use mcp_documents::infer_stack_preset;
 pub(crate) use mcp_documents::load as mcp_documents;

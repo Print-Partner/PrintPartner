@@ -366,7 +366,7 @@ fn duplicate_source(
     .map_err(Into::into)
 }
 
-fn layers(
+pub(crate) fn layers(
     tx: &Transaction<'_>,
     tenant: &str,
     build: i64,

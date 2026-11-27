@@ -16,12 +16,14 @@ function NoteForm({ close }: { close: () => void }) {
     queryKey: ["core", "board-builds"],
     queryFn: ({ signal }) => readCore("listBoardBuilds", {}, signal),
     enabled: connection !== "offline",
+    networkMode: "always",
   });
   const client = useQueryClient();
   const [build, setBuild] = useState("");
   const [note, setNote] = useState("");
   const save = useMutation({
     mutationFn: () => writeCore("createBoardNote", {}, { build_id: Number(build), body: note }),
+    networkMode: "always",
     retry: false,
     onSuccess: () => {
       close();
@@ -120,6 +122,7 @@ export function BoardScreen() {
     queryKey: boardKey,
     queryFn: ({ signal }) => readCore("listBoardNotes", {}, signal),
     enabled: connection !== "offline",
+    networkMode: "always",
   });
   return (
     <ScreenTemplate

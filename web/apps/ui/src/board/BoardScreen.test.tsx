@@ -1,4 +1,5 @@
 import type { BoardNote, ProfileSummary } from "@print-partner/rust-client";
+import { onlineManager } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
@@ -72,6 +73,25 @@ it("retains overlong input and refuses to save it until shortened", async () => 
   fireEvent.change(input, { target: { value: note.body } });
   expect(screen.queryByRole("alert")).toBeNull();
   expect(save.disabled).toBe(false);
+});
+
+it("sends a Board note immediately when the browser reports offline but the core is reachable", async () => {
+  const fetchMock = await openNoteForm();
+  fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: note.body } });
+  onlineManager.setOnline(false);
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Save note" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([path, init]) =>
+          path === "/api/v2/board/notes" && init?.method === "POST",
+        ),
+      ).toHaveLength(1),
+    );
+    expect(await screen.findByText(note.body)).toBeTruthy();
+  } finally {
+    onlineManager.setOnline(true);
+  }
 });
 
 it("lets an owner select the 65th Build when the full Build list is refused", async () => {

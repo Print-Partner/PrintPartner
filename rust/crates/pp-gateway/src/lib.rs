@@ -788,6 +788,18 @@ fn error(status: StatusCode, detail: &'static str) -> Response<Body> {
         .into_response()
 }
 
+fn retired_direct_3mf_job() -> Response<Body> {
+    (
+        StatusCode::GONE,
+        [("cache-control", "no-store")],
+        axum::Json(serde_json::json!({
+            "detail": "Download direct 3MF at GET /api/v2/plans/{id}/exports/direct-3mf",
+            "code": "direct_3mf_job_retired",
+        })),
+    )
+        .into_response()
+}
+
 /// A browser that follows a stale link gets a page that says what to do next.
 /// Other clients keep the JSON error.
 fn bootstrap_rejected(request: &Request<Body>) -> Response<Body> {
@@ -1139,7 +1151,15 @@ async fn handle(
         });
     }
 
+    let direct_3mf_job = request.method() == "POST"
+        && matches!(
+            path.as_str(),
+            "/jobs/export-direct-3mf" | "/api/v1/jobs/export-direct-3mf"
+        );
     if let Some(product) = product_router(&state) {
+        if direct_3mf_job {
+            return retired_direct_3mf_job();
+        }
         return product_response(&state, product, request, admission, Streams::Release).await;
     }
     // Route miss: no gateway, asset or Rust product route answered, so the
@@ -1180,6 +1200,9 @@ async fn handle(
         );
     }
     if operation.owner == Owner::Rust {
+        if direct_3mf_job {
+            return retired_direct_3mf_job();
+        }
         if matches!(path.as_str(), "/legal/summary" | "/api/v1/legal/summary")
             && matches!(request.method().as_str(), "GET" | "HEAD")
         {

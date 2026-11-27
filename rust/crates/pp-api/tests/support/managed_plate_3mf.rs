@@ -16,6 +16,7 @@ use std::{
 use zip::ZipArchive;
 
 const EXPORT: &str = "/api/v2/plans/1/exports/managed-3mf";
+const DIRECT: &str = "/api/v2/plans/1/exports/direct-3mf";
 const STL: &str = "repos/1/revisions/accepted/included.stl";
 const TOKEN: &str = "ppu_574c8d5f92624f029e21705a8ebb8a1b";
 const PLATE: &str = "plate_e7bb4d93583fcd4cfcebb2dfc6f8e503";
@@ -175,6 +176,114 @@ async fn refuse(router: &Router, path: &str, code: &str, expected: StatusCode) -
     let (status, body) = loopback::send(router, "GET", path, None, COOKIE).await;
     assert_eq!((status, &body["code"]), (expected, &json!(code)), "{body}");
     body
+}
+
+async fn direct_bytes(router: &Router) -> Vec<u8> {
+    let request =
+        Request::get(format!("{DIRECT}?tokens={TOKEN}")).header("cookie", COOKIE.unwrap());
+    let response = loopback::respond(router, request, Vec::new()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "model/3mf");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(
+        response.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .ends_with("-v1-direct.3mf\"")
+    );
+    to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap()
+        .to_vec()
+}
+
+#[tokio::test]
+async fn ticket_t_58_three_mf_direct_golden_survives_restart() {
+    let dir = data_dir();
+    let root = dir.path();
+    initialize_fixture(root);
+    let sql = rusqlite::Connection::open(root.join("print-partner.db")).unwrap();
+    assert_eq!(
+        sql.execute(
+            "UPDATE parts SET filament_custom_hex='#12AB34' WHERE id=2",
+            []
+        )
+        .unwrap(),
+        1
+    );
+    let (owner, router) = open(root);
+    let before = direct_bytes(&router).await;
+    let model = read_members(
+        &before,
+        &["3D/3dmodel.model", "[Content_Types].xml", "_rels/.rels"],
+    );
+    assert_eq!(model[0], include_bytes!("direct_3mf.model"));
+    let jobs: i64 = sql
+        .query_row("SELECT COUNT(*) FROM durable_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 0);
+    assert!(root.join("exports").read_dir().unwrap().next().is_none());
+    drop(sql);
+    drop(router);
+    owner.shutdown().unwrap();
+    let (owner, router) = open(root);
+    assert_eq!(direct_bytes(&router).await, before);
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn ticket_t_58_three_mf_direct_refuses_invalid_selection_and_sources() {
+    let dir = data_dir();
+    initialize_fixture(dir.path());
+    let (owner, router) = open(dir.path());
+    let path = format!("{DIRECT}?tokens={TOKEN}");
+    assert_eq!(
+        loopback::send(&router, "GET", &path, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    for path in [
+        DIRECT.into(),
+        format!("{path},{TOKEN}"),
+        format!("{path}&tokens={TOKEN}"),
+    ] {
+        refuse(
+            &router,
+            &path,
+            "invalid_direct_selection",
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    let excluded = "ppu_827108f7baf3a2f3461d20c24e85822e";
+    let body = refuse(
+        &router,
+        &format!("{path},{excluded}"),
+        "invalid_direct_selection",
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(body["token"], excluded);
+    let many = (0..257)
+        .map(|i| format!("ppu_{i:032x}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let body = refuse(
+        &router,
+        &format!("{DIRECT}?tokens={many}"),
+        "three_mf_too_large",
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    assert_eq!(body["limit"], "objects");
+    std::fs::write(dir.path().join(STL), b"changed").unwrap();
+    let (status, body) = loopback::send(&router, "GET", &path, None, COOKIE).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "source_files_unavailable");
+    assert_eq!(
+        (&body["reason"], &body["token"]),
+        (&json!("digest_mismatch"), &json!(TOKEN))
+    );
+    owner.shutdown().unwrap();
 }
 
 #[tokio::test]

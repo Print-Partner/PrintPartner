@@ -25,6 +25,11 @@ saved translation applied, against `pp-api/tests/support/managed_plate_3mf.model
 It compares the uncompressed model, not the compressor's bytes. GRE-1775
 tracks the remaining 3MF golden proof.
 
+GRE-1981's `ticket_t_58_three_mf_direct_golden_survives_restart` checks the
+standalone 3MF package members, selected Required-unit identity, material and
+mesh in `pp-api/tests/support/direct_3mf.model`. It downloads the same bytes
+after storage restarts, without publishing Plates or writing a job.
+
 ## Timestamps
 
 Every golden is byte for byte except one value. The checklist route stamps the wall clock into its `Generated` line. The route test checks that the value is RFC 3339 and within five minutes of now, then replaces only that value with `GENERATED`. The pure checklist test passes a fixed time, so it needs no normalization. The STL pack writes the 1980-01-01 DOS date, so its archive bytes are a contract and nothing is normalized.

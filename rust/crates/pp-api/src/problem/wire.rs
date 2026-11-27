@@ -178,6 +178,8 @@ problem_codes! {
     InvalidPlateLayout = "invalid_plate_layout";
     UnplacedUnits = "unplaced_units";
     ThreeMfTooLarge = "three_mf_too_large";
+    InvalidDirectSelection = "invalid_direct_selection";
+    DirectPackingConflict = "direct_packing_conflict";
     ArtifactGeometryMismatch = "artifact_geometry_mismatch";
     SourceFilesUnavailable = "source_files_unavailable";
 }

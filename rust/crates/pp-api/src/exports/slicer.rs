@@ -93,7 +93,7 @@ pub(super) async fn deliver(
                     )
                     .map_err(managed::Failure::Capture)?;
                 let _permit = app
-                    .managed_render
+                    .three_mf_render
                     .try_acquire()
                     .map_err(|_| managed::Failure::Busy)?;
                 let ordinal = selection.plate_ordinal;

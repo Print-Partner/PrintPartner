@@ -275,7 +275,7 @@ fn js_non_alnum_slug(text: &str) -> String {
 /// The key draft preparation looks a role's default up by: the role
 /// JS-trimmed and lowercased, `primary` when blank, as Node's
 /// `normalizePartRole` gives it.
-fn role_key(role: &str) -> String {
+pub(crate) fn role_key(role: &str) -> String {
     let key = pp_domain::build_identity::trim_js(role).to_lowercase();
     if key.is_empty() {
         "primary".into()

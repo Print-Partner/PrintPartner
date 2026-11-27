@@ -268,6 +268,7 @@ The Rust core answers exports on request instead, with no job and no stored file
 GET   /api/v2/plans/:id/exports/checklist
 GET   /api/v2/plans/:id/exports/stl-pack[?scope=remaining]
 GET   /api/v2/plans/:id/exports/managed-3mf?plate_revision_id=:revision
+GET   /api/v2/plans/:id/exports/direct-3mf?tokens=:comma_separated_required_unit_tokens
 ```
 
 It returns one self-contained HTML page as an attachment named `<build-slug>-v<plan version>-checklist.html`. The page shows the Build name, order number, Plan version and generated time, then every included Part grouped by Source and folder: file name, role, colour swatch, quantity, printed units out of quantity, and notes. Each included tracked Part with a renderable accepted artifact includes a PNG thumbnail derived from the artifact pinned by the accepted Plan, never the current Source revision; legacy, missing, unsafe, oversized or unrenderable artifacts omit the image without omitting the Part. Rendering reads at most 64 MiB per artifact and accepts at most 1,000,000 triangles. The export embeds at most 8 MiB of PNG bytes; if an image would exceed the remaining budget, it and subsequent thumbnails are omitted while all Part rows remain. Quantities and printed counts are those of `GET /api/v2/plans/:id/checkoff/units` at the same moment. The page has no script, embeds images as data URLs, and its Content Security Policy allows only its inline style sheet and data images, so opening it from disk makes no request; all Plan text is escaped. Without a valid session or API key it answers 401, for an unknown Build 404, and for a Build with no accepted Plan 409 with code `no_accepted_plan`. An accepted Plan that needs compatibility repair or was never initialized answers 409 with code `accepted_plan_unavailable`, and busy or stopped storage answers 503. The response also sends the page's Content Security Policy as a header and `Cache-Control: no-store`.
@@ -291,7 +292,31 @@ The Rust-only runtime generates the archive on a blocking worker and stores
 nothing. One export runs at a time, with caps of 10,000 objects, 5 million
 triangles, 64 MiB per Source file, 256 MiB of Source reads, and 128 MiB each
 for model XML and the ZIP. Repeated objects count toward those limits.
-Direct 3MF export and slicer handoff are separate from the bundle download.
+
+#### Direct 3MF download
+
+Direct 3MF downloads one `.3mf` attachment (`model/3mf`) from the current
+accepted Plan. It takes 1–256 distinct Required-unit tokens, includes only
+those units, and verifies each Source SHA-256 before rendering. It packs the
+objects in token order, with a 10 mm gap and a 250 mm row target. Larger
+objects start their own row. It does not use managed placements, select
+a printer, or send to a slicer. It reads the Plan's current filament colors.
+For a Spoolman filament, it uses the color saved with the matching role
+assignment, without contacting Spoolman.
+The managed and direct downloads share the Source, triangle, and output caps
+above. Invalid or duplicate tokens return `400 invalid_direct_selection`;
+tokens not required by the accepted Plan return `409 invalid_direct_selection`.
+An object or layout outside the coordinate range returns
+`409 direct_packing_conflict`. Neither download writes a job or a file.
+
+The legacy direct job aliases (`POST /jobs/export-direct-3mf` and
+`POST /api/v1/jobs/export-direct-3mf`) are refused with
+`410 direct_3mf_job_retired` in the Rust runtime. On the compatibility gateway,
+they remain with Node until the existing `export.direct-3mf` operation cutover
+record takes ownership of both aliases and fences the Node worker together.
+After cutover the gateway refuses both aliases; it never sends them to Node
+or starts a Rust replacement job. The managed Plate job and slicer-handoff
+aliases are a separate operation and do not switch here.
 
 #### Local slicer handoff
 

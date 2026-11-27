@@ -1,4 +1,4 @@
-use super::{App, attachment, build_id, exports, problem};
+use super::{App, attachment, build_id, exports, problem, required_members};
 use crate::{
     loopback::PresentedCredential,
     problem::{Problem, ProblemCode, ToProblem},
@@ -12,21 +12,18 @@ use pp_services::exports::three_mf::{Bundle, MAX_OBJECTS, Object, Refusal};
 use pp_storage::{
     WriterFailure,
     accepted_artifacts::{ArtifactFailure, ArtifactOpenMode, OpenedArtifact},
-    plates::{AcceptedMaterial, ManagedExport, ManagedExportFailure},
+    plates::{ManagedExport, ManagedExportFailure},
     production::geometry::{GeometryLimits, MeshFailure, ParsedMesh, dimensions_um, mesh},
     read_model::{Artifact, ReadClient, views::catalog_color},
 };
 use serde::Deserialize;
 use serde_json::{Map, json};
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_TRIANGLES: usize = 5_000_000;
-const MAX_OUTPUT_BYTES: usize = 128 * 1024 * 1024;
+pub(super) const MAX_OUTPUT_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub(super) struct RevisionQuery {
@@ -62,7 +59,7 @@ pub(super) async fn download(
                 )
                 .map_err(Failure::Capture)?;
             let _permit = app
-                .managed_render
+                .three_mf_render
                 .try_acquire()
                 .map_err(|_| Failure::Busy)?;
             let filename = format!(
@@ -89,19 +86,8 @@ pub(super) fn render(
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, Failure> {
     let plan = &captured.plan;
-    let members: HashMap<_, _> = plan
-        .parts
-        .iter()
-        .filter(|part| part.included)
-        .flat_map(|part| {
-            part.units
-                .iter()
-                .filter(|unit| unit.required)
-                .map(move |unit| (unit.token.as_str(), (part, unit.object_name.as_str())))
-        })
-        .collect();
-    let mut source_bytes = MAX_SOURCE_BYTES;
-    let mut triangles = MAX_TRIANGLES;
+    let members = required_members(plan);
+    let mut budget = GeometryBudget::new();
     let mut bundle = Bundle::new(MAX_OUTPUT_BYTES);
     let mut plates = Vec::with_capacity(captured.plates.len());
     for plate in captured.plates {
@@ -116,52 +102,10 @@ pub(super) fn render(
             let &(part, name) = members
                 .get(token)
                 .ok_or(Failure::Capture(ManagedExportFailure::InvalidLayout))?;
-            let max_bytes = source_bytes.min(MAX_ARTIFACT_BYTES);
-            let bytes = match client.open_artifact(
-                &part.artifact,
-                ArtifactOpenMode::Bounded {
-                    max_bytes,
-                    cancelled,
-                },
-            ) {
-                Ok(OpenedArtifact::Bounded(bytes)) => bytes,
-                Ok(_) => return Err(Failure::Encode),
-                Err(ArtifactFailure::TooLarge { .. }) => {
-                    return Err(Failure::Limit("source_bytes"));
-                }
-                Err(ArtifactFailure::Cancelled) => return Err(Failure::Cancelled),
-                Err(reason) => {
-                    return Err(Failure::Source {
-                        token: token.into(),
-                        reason,
-                    });
-                }
-            };
-            source_bytes -= bytes.len() as u64;
-            let (vertices, bounds) = mesh(
-                &bytes,
-                GeometryLimits {
-                    max_bytes: bytes.len(),
-                    max_triangles: triangles,
-                },
-            )
-            .map_err(|failure| match failure {
-                MeshFailure::TooManyTriangles => Failure::Limit("triangles"),
-                MeshFailure::Invalid(_) => Failure::Geometry(token.into()),
-            })?;
-            let count = vertices.len() / 3;
-            triangles -= count;
-            let dims = dimensions_um(&ParsedMesh {
-                triangles: count,
-                bounds,
-            })
-            .map_err(|_| Failure::Geometry(token.into()))?;
-            if [
-                dims.width_um.get(),
-                dims.depth_um.get(),
-                dims.height_um.get(),
-            ] != [placement.width_um, placement.depth_um, placement.height_um]
-                .map(|d| u64::from(d.get()))
+            let geometry = budget.load(client, token, &part.artifact, cancelled)?;
+            if geometry.dimensions
+                != [placement.width_um, placement.depth_um, placement.height_um]
+                    .map(|d| u64::from(d.get()))
             {
                 return Err(Failure::Geometry(token.into()));
             }
@@ -169,15 +113,15 @@ pub(super) fn render(
                 .materials
                 .get(&part.revision_part_id)
                 .ok_or(Failure::Capture(ManagedExportFailure::InvalidLayout))?;
-            let color = color(material);
+            let color = color(material.custom_hex.as_deref(), material.color_id.as_deref());
             let object_id = model
                 .object(Object {
                     token,
                     name,
                     color,
                     position_um: [placement.x_um.get(), placement.y_um.get()],
-                    minimum: [bounds.min_x, bounds.min_y, bounds.min_z],
-                    vertices: &vertices,
+                    minimum: geometry.minimum,
+                    vertices: &geometry.vertices,
                 })
                 .map_err(|err| match err {
                     Refusal::NoTriangles => Failure::Geometry(token.into()),
@@ -204,7 +148,7 @@ pub(super) fn render(
             return Err(Failure::Cancelled);
         }
         if ordinal.is_some() {
-            return model.into_3mf(MAX_OUTPUT_BYTES).map_err(Failure::encode);
+            return model.package(MAX_OUTPUT_BYTES).map_err(Failure::encode);
         }
         let entry = bundle
             .plate(plate.ordinal, model)
@@ -234,14 +178,10 @@ pub(super) fn render(
         .map_err(Failure::encode)
 }
 
-fn color(material: &AcceptedMaterial) -> Option<&str> {
-    material
-        .custom_hex
-        .as_deref()
+pub(super) fn color<'a>(custom_hex: Option<&'a str>, color_id: Option<&str>) -> Option<&'a str> {
+    custom_hex
         .or_else(|| {
-            material
-                .color_id
-                .as_deref()
+            color_id
                 .and_then(catalog_color)
                 .map(|color| color.hex.as_str())
         })
@@ -253,6 +193,79 @@ fn color(material: &AcceptedMaterial) -> Option<&str> {
 }
 
 #[derive(Debug)]
+pub(super) struct Geometry {
+    pub dimensions: [u64; 3],
+    pub minimum: [f64; 3],
+    pub vertices: Vec<[f64; 3]>,
+}
+
+pub(super) struct GeometryBudget {
+    source_bytes: u64,
+    triangles: usize,
+}
+
+impl GeometryBudget {
+    pub fn new() -> Self {
+        Self {
+            source_bytes: MAX_SOURCE_BYTES,
+            triangles: MAX_TRIANGLES,
+        }
+    }
+
+    pub fn load(
+        &mut self,
+        client: &ReadClient,
+        token: &str,
+        artifact: &Artifact,
+        cancelled: &AtomicBool,
+    ) -> Result<Geometry, Failure> {
+        let max_bytes = self.source_bytes.min(MAX_ARTIFACT_BYTES);
+        let bytes = match client.open_artifact(
+            artifact,
+            ArtifactOpenMode::Bounded {
+                max_bytes,
+                cancelled,
+            },
+        ) {
+            Ok(OpenedArtifact::Bounded(bytes)) => bytes,
+            Ok(_) => return Err(Failure::Encode),
+            Err(ArtifactFailure::TooLarge { .. }) => return Err(Failure::Limit("source_bytes")),
+            Err(ArtifactFailure::Cancelled) => return Err(Failure::Cancelled),
+            Err(reason) => {
+                return Err(Failure::Source {
+                    token: token.into(),
+                    reason,
+                });
+            }
+        };
+        self.source_bytes -= bytes.len() as u64;
+        let (vertices, bounds) = mesh(
+            &bytes,
+            GeometryLimits {
+                max_bytes: bytes.len(),
+                max_triangles: self.triangles,
+            },
+        )
+        .map_err(|failure| match failure {
+            MeshFailure::TooManyTriangles => Failure::Limit("triangles"),
+            MeshFailure::Invalid(_) => Failure::Geometry(token.into()),
+        })?;
+        let triangles = vertices.len() / 3;
+        self.triangles -= triangles;
+        let dims = dimensions_um(&ParsedMesh { triangles, bounds })
+            .map_err(|_| Failure::Geometry(token.into()))?;
+        Ok(Geometry {
+            dimensions: [
+                dims.width_um.get(),
+                dims.depth_um.get(),
+                dims.height_um.get(),
+            ],
+            minimum: [bounds.min_x, bounds.min_y, bounds.min_z],
+            vertices,
+        })
+    }
+}
+
 pub(super) enum Failure {
     Busy,
     RevisionRequired,
@@ -264,25 +277,30 @@ pub(super) enum Failure {
         reason: ArtifactFailure,
     },
     Geometry(String),
+    InvalidSelection,
+    UnknownUnit(String),
+    PackingConflict(String),
     Encode,
     Cancelled,
 }
 
 impl Failure {
-    fn encode(error: Refusal) -> Self {
+    pub fn encode(error: Refusal) -> Self {
         match error {
             Refusal::OutputLimit => Self::Limit("output_bytes"),
             _ => Self::Encode,
         }
     }
 
-    pub(super) fn response(&self) -> Response {
+    pub fn response(&self) -> Response {
         let fields = match self {
-            Self::Busy => return problem::overloaded("Another managed Plate export is running"),
+            Self::Busy => return problem::overloaded("Another 3MF export is running"),
             Self::Limit(limit) => json!({"limit": limit}),
             Self::Capture(ManagedExportFailure::TooManyObjects) => json!({"limit": "objects"}),
             Self::Source { token, reason } => json!({"token": token, "reason": reason.code()}),
-            Self::Geometry(token) => json!({"token": token}),
+            Self::Geometry(token) | Self::UnknownUnit(token) | Self::PackingConflict(token) => {
+                json!({"token": token})
+            }
             _ => return problem::refused(self),
         };
         problem::build(
@@ -351,7 +369,7 @@ impl ToProblem for Failure {
             ),
             Self::Limit(_) | Self::Capture(Capture::TooManyObjects) => (
                 Status::UNPROCESSABLE_ENTITY,
-                "The managed Plate export exceeds a size limit",
+                "The 3MF export exceeds a size limit",
                 Code::ThreeMfTooLarge,
             ),
             Self::Source { .. } => (
@@ -361,13 +379,28 @@ impl ToProblem for Failure {
             ),
             Self::Geometry(_) => (
                 Status::CONFLICT,
-                "The accepted Source geometry does not match its placement",
+                "The accepted Source geometry is invalid or does not match its placement",
                 Code::ArtifactGeometryMismatch,
+            ),
+            Self::InvalidSelection => (
+                Status::BAD_REQUEST,
+                "Provide a comma-separated list of distinct Required-unit tokens",
+                Code::InvalidDirectSelection,
+            ),
+            Self::UnknownUnit(_) => (
+                Status::CONFLICT,
+                "The selected unit is not Required by the accepted Plan",
+                Code::InvalidDirectSelection,
+            ),
+            Self::PackingConflict(_) => (
+                Status::CONFLICT,
+                "The selected units exceed the direct export coordinate range",
+                Code::DirectPackingConflict,
             ),
             Self::Encode => {
                 return problem::problem(
                     Status::INTERNAL_SERVER_ERROR,
-                    "Could not generate the managed Plate export",
+                    "Could not generate the 3MF export",
                     None,
                 );
             }

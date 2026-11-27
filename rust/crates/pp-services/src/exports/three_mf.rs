@@ -1,4 +1,4 @@
-//! Managed export: one 3MF model per accepted Plate, bundled with its manifest.
+//! Standalone 3MF models and managed Plate archives.
 
 use serde::Serialize;
 use std::{
@@ -28,6 +28,42 @@ pub enum Refusal {
     OutputLimit,
     NoTriangles,
     Encode,
+}
+
+#[derive(Default)]
+pub struct DirectLayout {
+    x: u64,
+    y: u64,
+    row_depth: u64,
+}
+
+#[derive(Debug)]
+pub struct PackingConflict;
+
+impl DirectLayout {
+    pub fn place(&mut self, [width, depth, height]: [u64; 3]) -> Result<[u32; 2], PackingConflict> {
+        const GAP: u64 = 10_000;
+        const ROW_WIDTH: u64 = 250_000;
+        const MAX_COORDINATE: u64 = i32::MAX as u64;
+        if [width, depth, height]
+            .into_iter()
+            .any(|d| d > MAX_COORDINATE)
+        {
+            return Err(PackingConflict);
+        }
+        if self.x > 0 && self.x + width > ROW_WIDTH {
+            self.x = 0;
+            self.y += self.row_depth + GAP;
+            self.row_depth = 0;
+        }
+        if self.y + depth > MAX_COORDINATE {
+            return Err(PackingConflict);
+        }
+        let position = [self.x as u32, self.y as u32];
+        self.x += width + GAP;
+        self.row_depth = self.row_depth.max(depth);
+        Ok(position)
+    }
 }
 
 impl From<ZipError> for Refusal {
@@ -66,12 +102,7 @@ impl Bundle {
     }
 
     pub fn model(&self) -> Result<Model, Refusal> {
-        let mut xml = BoundedBuffer::new(self.xml_remaining);
-        xml.write_all(MODEL_HEADER.as_bytes())?;
-        Ok(Model {
-            xml,
-            items: Vec::new(),
-        })
+        Model::new(self.xml_remaining)
     }
 
     pub fn plate(&mut self, ordinal: u32, model: Model) -> Result<String, Refusal> {
@@ -126,8 +157,16 @@ pub struct Object<'a> {
 }
 
 impl Model {
-    /// Encode the same standalone 3MF that a bundle includes for this model.
-    pub fn into_3mf(self, max_bytes: usize) -> Result<Vec<u8>, Refusal> {
+    pub fn new(max_bytes: usize) -> Result<Self, Refusal> {
+        let mut xml = BoundedBuffer::new(max_bytes);
+        xml.write_all(MODEL_HEADER.as_bytes())?;
+        Ok(Self {
+            xml,
+            items: Vec::new(),
+        })
+    }
+
+    pub fn package(self, max_bytes: usize) -> Result<Vec<u8>, Refusal> {
         package(&self.finish()?, max_bytes)
     }
 
@@ -301,5 +340,23 @@ mod tests {
             ..object()
         };
         assert!(matches!(model.object(collapsed), Err(Refusal::NoTriangles)));
+    }
+
+    #[test]
+    fn ticket_t_58_three_mf_direct_packs_without_overlap_and_bounds_coordinates() {
+        let mut layout = DirectLayout::default();
+        assert_eq!(layout.place([150_000, 50_000, 1]).unwrap(), [0, 0]);
+        assert_eq!(layout.place([90_000, 20_000, 1]).unwrap(), [160_000, 0]);
+        assert_eq!(layout.place([300_000, 80_000, 1]).unwrap(), [0, 60_000]);
+        assert_eq!(layout.place([10_000, 10_000, 1]).unwrap(), [0, 150_000]);
+        assert!(layout.place([i32::MAX as u64 + 1, 1, 1]).is_err());
+        assert!(layout.place([250_000, i32::MAX as u64, 1]).is_err());
+    }
+
+    #[test]
+    fn ticket_t_58_three_mf_direct_limits_standalone_package() {
+        let mut model = Model::new(8_192).unwrap();
+        model.object(object()).unwrap();
+        assert!(matches!(model.package(128), Err(Refusal::OutputLimit)));
     }
 }

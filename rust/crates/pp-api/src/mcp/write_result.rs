@@ -50,6 +50,7 @@ pub(super) enum Code {
     InvalidPlanId,
     PlanNotFound,
     NoPlanningBrief,
+    StalePlan,
     // propose_set_build_source_roles
     InvalidRoles,
     PlanningBriefInvalid,
@@ -119,6 +120,7 @@ impl Code {
             Self::InvalidPlanId => "invalid_plan_id",
             Self::PlanNotFound => "plan_not_found",
             Self::NoPlanningBrief => "no_planning_brief",
+            Self::StalePlan => "stale_plan",
             Self::InvalidRoles => "invalid_roles",
             Self::PlanningBriefInvalid => "planning_brief_invalid",
             Self::InvalidRoleAssignment => "invalid_role_assignment",

@@ -245,6 +245,52 @@ fn snapshot_headers(server: &ReadServer) -> i64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_plan_history_reads_the_previous_revision_after_accept() {
+    let server = proposed_header().await;
+    std::fs::create_dir_all(server.directory.join("repos/1/revisions/fixture")).unwrap();
+    let mcp = Mcp::start(&server).await;
+    let query = json!({"plan_id":1,"query":"bracket"});
+    let explicit = json!({"plan_id":1,"query":"bracket","revision_id":1});
+    let (failed, before) = mcp.call("search_plan_parts", explicit.clone()).await;
+    assert!(!failed, "{before}");
+    assert_eq!(before["basis"]["revision_id"], 1);
+    let (failed, proposal) = mcp.propose().await;
+    assert!(!failed, "{proposal}");
+    let (failed, receipt) = mcp
+        .confirm(proposal["action"]["id"].as_str().unwrap())
+        .await;
+    assert!(!failed, "{receipt}");
+
+    let (failed, head) = mcp.call("get_plan_snapshot", json!({"plan_id":1})).await;
+    assert!(!failed, "{head}");
+    assert_eq!(head["basis"]["revision_id"], 2);
+    assert_eq!(head["revisions"].as_array().unwrap().len(), 2);
+    assert!(head["draft"].is_null());
+    let (failed, past) = mcp.call("search_plan_parts", explicit).await;
+    assert!(!failed, "{past}");
+    assert_eq!(past["basis"]["kind"], "historical");
+    assert_eq!(past["basis"]["revision_id"], 1);
+    assert_eq!(past["parts"], before["parts"]);
+    let (failed, after) = mcp.call("search_plan_parts", query).await;
+    assert!(!failed, "{after}");
+    assert_eq!(after["basis"]["revision_id"], 2);
+    assert_eq!(
+        after["parts"][0]["part_key"],
+        before["parts"][0]["part_key"]
+    );
+    assert_ne!(
+        after["parts"][0]["revision_part_id"],
+        before["parts"][0]["revision_part_id"]
+    );
+    assert_eq!(
+        after["parts"][0]["required_unit_tokens"],
+        before["parts"][0]["required_unit_tokens"]
+    );
+    drop(mcp);
+    server.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gre_1236_mcp_accepts_the_previewed_revision_and_copies_the_header_once() {
     let server = proposed_header().await;
     let mcp = Mcp::start(&server).await;

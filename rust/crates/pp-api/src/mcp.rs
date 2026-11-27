@@ -164,6 +164,7 @@ struct Reads {
     planning: PlanningClient,
     progress: ProgressClient,
     accepted: ReadClient,
+    review_observer: Option<Arc<dyn McpReviewObserver>>,
     farm: McpFarm,
     wait: Duration,
     #[cfg(test)]
@@ -179,7 +180,17 @@ pub struct McpClients {
     pub planning: PlanningClient,
     pub progress: ProgressClient,
     pub accepted: ReadClient,
+    pub review_observer: Option<Arc<dyn McpReviewObserver>>,
     pub farm: McpFarm,
+}
+
+/// Local observations only; MCP Review does not need live filament inventory.
+pub trait McpReviewObserver: Send + Sync {
+    fn observe(
+        &self,
+        snapshot: &pp_storage::read_model::Snapshot,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> anyhow::Result<pp_storage::read_model::views::ReviewObservations>;
 }
 
 /// What `get_farm_status` and the farm tools' Module gate read: the farm
@@ -226,6 +237,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         planning,
         progress,
         accepted,
+        review_observer,
         farm,
     } = clients;
     let reads = Reads {
@@ -235,6 +247,7 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpCl
         planning,
         progress,
         accepted,
+        review_observer,
         farm,
         wait: config.wait,
         #[cfg(test)]
@@ -361,6 +374,7 @@ pub(crate) fn test_router_watching(
             planning,
             progress,
             accepted,
+            review_observer: Some(Arc::new(FixtureReviewObserver)),
             farm: McpFarm {
                 reads: owner.farm_reads(policy).unwrap(),
                 observations,
@@ -371,6 +385,47 @@ pub(crate) fn test_router_watching(
         },
     );
     (router, auth)
+}
+
+#[cfg(test)]
+struct FixtureReviewObserver;
+
+#[cfg(test)]
+impl McpReviewObserver for FixtureReviewObserver {
+    fn observe(
+        &self,
+        snapshot: &pp_storage::read_model::Snapshot,
+        _: &std::sync::atomic::AtomicBool,
+    ) -> anyhow::Result<pp_storage::read_model::views::ReviewObservations> {
+        use pp_storage::read_model::{
+            Provenance,
+            views::{MediaObservation, ReviewObservations},
+        };
+        let available_input_roots = match &snapshot.provenance {
+            Provenance::Tracked { inputs, .. } => {
+                inputs.iter().map(|input| input.input_id).collect()
+            }
+            Provenance::Legacy => Default::default(),
+        };
+        let media_by_part_id = snapshot
+            .parts
+            .iter()
+            .filter(|part| part.included)
+            .map(|part| {
+                (
+                    part.projection_part_id,
+                    MediaObservation {
+                        artifact_missing: false,
+                        thumb_empty: true,
+                    },
+                )
+            })
+            .collect();
+        Ok(ReviewObservations {
+            available_input_roots,
+            media_by_part_id,
+        })
+    }
 }
 
 async fn guard(
@@ -644,10 +699,11 @@ impl ServerHandler for ProductMcp {
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<PresentedCredential>())
             .cloned();
-        let tools = self
+        let mut tools = self
             .in_session(presented, |session| session.list_tools())
             .await?
             .map_err(|error| internal(error.0))?;
+        plan_history::describe_revision_selector(&mut tools);
         serde_json::from_value(tools).map_err(internal)
     }
 
@@ -677,6 +733,10 @@ impl ServerHandler for ProductMcp {
             }
             Some(presented) if planning_reads::TOOLS.contains(&request.name.as_ref()) => {
                 self.planning_read(&request.name, &arguments, presented)
+                    .await
+            }
+            Some(presented) if plan_history::TOOLS.contains(&request.name.as_ref()) => {
+                self.plan_history_tool(&request.name, &arguments, presented)
                     .await
             }
             Some(presented) if reads::TOOLS.contains(&request.name.as_ref()) => {
@@ -725,6 +785,8 @@ mod farm_status;
 mod import_inputs;
 #[path = "mcp/plan_accept.rs"]
 pub(crate) mod plan_accept;
+#[path = "mcp/plan_history.rs"]
+mod plan_history;
 #[path = "mcp/planning.rs"]
 mod planning;
 #[path = "mcp/planning_reads.rs"]

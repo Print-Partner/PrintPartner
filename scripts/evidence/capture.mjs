@@ -151,7 +151,7 @@ async function main() {
         const build = profiles[0];
         if (!build) throw new CaptureError("Board evidence needs a synthetic Build");
         await guarded(page.getByRole("button", { name: "Add note" }).click(), "opening the Board form failed");
-        await guarded(page.getByLabel("Build", { exact: true }).selectOption(String(build.id)), "choosing the Build failed");
+        await guarded(page.getByRole("combobox", { name: "Build", exact: true }).selectOption(String(build.id)), "choosing the Build failed");
         const body = "Check the fit before printing the remaining parts. Keep the spare clips with this Build.";
         await guarded(page.getByLabel("Note", { exact: true }).fill(body), "typing the note failed");
         await guarded(page.screenshot({ path: join(outDir, "board-create.png"), fullPage }), "Board form screenshot failed");

@@ -125,13 +125,15 @@ fn exact_binary_size(bytes: &[u8]) -> Option<usize> {
         .then_some(triangles)
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("STL exceeds triangle limit")]
+struct TriangleLimit;
+
 fn binary_vertices(bytes: &[u8], limits: GeometryLimits) -> Result<Vec<[f64; 3]>> {
     let triangles =
         exact_binary_size(bytes).ok_or_else(|| anyhow::anyhow!("binary STL length is invalid"))?;
-    ensure!(
-        triangles > 0 && triangles <= limits.max_triangles,
-        "STL triangle count is outside bounds"
-    );
+    ensure!(triangles > 0, "mesh has no triangles");
+    ensure!(triangles <= limits.max_triangles, TriangleLimit);
     let mut vertices = Vec::with_capacity(
         triangles
             .checked_mul(3)
@@ -230,10 +232,7 @@ fn ascii_vertices(bytes: &[u8], limits: GeometryLimits) -> Result<Vec<[f64; 3]>>
             "ASCII STL facet is truncated"
         );
         triangles += 1;
-        ensure!(
-            triangles <= limits.max_triangles,
-            "STL triangle count is outside bounds"
-        );
+        ensure!(triangles <= limits.max_triangles, TriangleLimit);
     }
     ensure!(triangles > 0, "mesh has no triangles");
     Ok(vertices)
@@ -258,12 +257,34 @@ pub fn parse_accepted_stl(bytes: &[u8], limits: GeometryLimits) -> Result<Parsed
     })
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum MeshFailure {
+    #[error(transparent)]
+    Invalid(#[from] InvalidMesh),
+    #[error("STL exceeds triangle limit")]
+    TooManyTriangles,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct InvalidMesh(String);
+
 /// The vertices [`parse_accepted_stl`] reads, three per triangle, with their
-/// bounds. The thumbnail renderer draws from these.
+/// bounds, for the thumbnail renderer and 3MF export.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn mesh(bytes: &[u8], limits: GeometryLimits) -> Result<(Vec<[f64; 3]>, MeshBounds)> {
-    let vertices = read_vertices(bytes, limits)?;
-    let bounds = MeshBounds::from_vertices(&vertices)?;
+pub fn mesh(
+    bytes: &[u8],
+    limits: GeometryLimits,
+) -> std::result::Result<(Vec<[f64; 3]>, MeshBounds), MeshFailure> {
+    let vertices = read_vertices(bytes, limits).map_err(|error| {
+        if error.is::<TriangleLimit>() {
+            MeshFailure::TooManyTriangles
+        } else {
+            MeshFailure::Invalid(InvalidMesh(error.to_string()))
+        }
+    })?;
+    let bounds =
+        MeshBounds::from_vertices(&vertices).map_err(|error| InvalidMesh(error.to_string()))?;
     Ok((vertices, bounds))
 }
 

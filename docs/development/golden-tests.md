@@ -18,7 +18,12 @@
 
 The `pp-api` tests are in `rust/crates/pp-api/tests/golden_old_screens.rs`. The `pp-domain` tests are in `rust/crates/pp-domain/tests/golden_print_files.rs`, because `rust/scripts/check-boundaries.py` does not let `pp-api` depend on `pp-domain`. Both use `pp_testkit::golden`.
 
-The 3MF export's members and build-item transforms are not pinned yet. Rust has no 3MF writer: the 2026-11-08 re-scope defers 3MF exports, and GRE-424 ports them. GRE-1775 adds that golden after GRE-424 lands.
+GRE-424's `ticket_t_58_three_mf_managed_archive_golden_survives_restart` opens the
+managed Plate ZIP and its 3MF on the Node accepted-Plate fixture. It checks
+package members, manifest provenance and identities, and the mesh with the
+saved translation applied, against `pp-api/tests/support/managed_plate_3mf.model`.
+It compares the uncompressed model, not the compressor's bytes. GRE-1775
+tracks the remaining 3MF golden proof.
 
 ## Timestamps
 

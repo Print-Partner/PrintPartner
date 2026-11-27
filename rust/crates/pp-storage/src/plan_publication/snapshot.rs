@@ -1,5 +1,5 @@
-//! The snapshot Accept saves of the Accepted Plan it is about to replace, so
-//! History can bring back that Plan's Source layers. The payload has the shape
+//! Snapshots of Accepted Plans, saved explicitly or before Accept replaces
+//! them, so History can bring back their Source layers. The payload has the shape
 //! of Node's `capturePlanSnapshotPayload` (`services/plan-snapshots.ts`), which
 //! Node's restore reads. Its layers come from the replaced revision's recorded
 //! inputs, not from `profile_layers`: Accept publishes the working layers, so
@@ -19,7 +19,7 @@ use rusqlite::OptionalExtension;
 /// with no rows is a Plan with no Source layers, and restoring `[]` brings
 /// that back. Accept saves no snapshot for `None`, and the preview reports
 /// `saved_before_accept` from the same answer.
-pub(super) fn replaced_layers(
+pub(crate) fn replaced_layers(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
@@ -83,6 +83,38 @@ pub(super) fn save_before_accept(
     let Some(layers) = replaced_layers(tx, tenant, profile, previous)? else {
         return Ok(());
     };
+    save(
+        tx,
+        tenant,
+        profile,
+        (previous, version),
+        layers,
+        (
+            Source::PreApply,
+            &format!("Before accepting draft {draft_id}"),
+            at,
+        ),
+    )?;
+    Ok(())
+}
+
+pub(crate) enum Source {
+    PreApply,
+    Assistant,
+}
+
+pub(crate) fn save(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    (previous, version): (Option<i64>, i64),
+    layers: Vec<Value>,
+    (source, name, at): (Source, &str, &str),
+) -> Result<i64> {
+    let source = match source {
+        Source::PreApply => "pre_apply",
+        Source::Assistant => "assistant",
+    };
     let payload = json!({
         "layers": layers,
         "kit_manifest": null,
@@ -92,20 +124,15 @@ pub(super) fn save_before_accept(
         "accepted_plan_version": version,
     });
     tx.execute(
-        "INSERT INTO plan_snapshots(tenant_id,profile_id,name,created_at,source,payload_json) VALUES(?1,?2,?3,?4,'pre_apply',?5)",
-        params![
-            tenant,
-            profile,
-            format!("Before accepting draft {draft_id}"),
-            at,
-            payload.to_string()
-        ],
+        "INSERT INTO plan_snapshots(tenant_id,profile_id,name,created_at,source,payload_json) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![tenant, profile, name, at, source, payload.to_string()],
     )?;
+    let snapshot = tx.last_insert_rowid();
     let header = crate::working_drafts::header::build_header(tx, tenant, profile)?;
     tx.execute(
         "INSERT INTO plan_snapshot_headers (snapshot_id,tenant_id,name,order_number,customer,due_date,captured_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         params![
-            tx.last_insert_rowid(),
+            snapshot,
             tenant,
             header.name,
             header.order_number,
@@ -114,5 +141,5 @@ pub(super) fn save_before_accept(
             at
         ],
     )?;
-    Ok(())
+    Ok(snapshot)
 }

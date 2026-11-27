@@ -87,6 +87,16 @@ pub(super) enum Code {
     NoStls,
     WouldWipe,
     IdempotencyConflict,
+    // Plan history changes
+    InvalidProposal,
+    BuildArchived,
+    SnapshotNotFound,
+    SnapshotNotRestorable,
+    SnapshotRestoreRefused,
+    PrintedUnitsAffected,
+    PrintRemaining,
+    BuildLimitReached,
+    InputsChanged,
 }
 
 impl Code {
@@ -151,6 +161,15 @@ impl Code {
             Self::NoStls => "no_stls",
             Self::WouldWipe => "would_wipe",
             Self::IdempotencyConflict => "idempotency_conflict",
+            Self::InvalidProposal => "invalid_proposal",
+            Self::BuildArchived => "build_archived",
+            Self::SnapshotNotFound => "snapshot_not_found",
+            Self::SnapshotNotRestorable => "snapshot_not_restorable",
+            Self::SnapshotRestoreRefused => "snapshot_restore_refused",
+            Self::PrintedUnitsAffected => "printed_units_affected",
+            Self::PrintRemaining => "print_remaining",
+            Self::BuildLimitReached => "build_limit_reached",
+            Self::InputsChanged => "inputs_changed",
         }
     }
 }

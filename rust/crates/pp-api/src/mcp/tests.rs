@@ -14,6 +14,8 @@ mod import_inputs;
 mod mcp_rpc;
 #[path = "tests/plan_history.rs"]
 mod plan_history;
+#[path = "tests/plan_history_changes.rs"]
+mod plan_history_changes;
 #[path = "tests/planning.rs"]
 mod planning;
 #[path = "tests/planning_reads.rs"]

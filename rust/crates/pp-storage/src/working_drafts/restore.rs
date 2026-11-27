@@ -21,7 +21,7 @@ use super::save::{
     Refusal, accepted_base, copy_credential, keyed_expectations, observed_draft, tenant_actor,
 };
 use super::*;
-pub use pp_contracts::snapshot_restore::RestoreSnapshotRequest;
+pub use pp_contracts::snapshot_restore::{RestoreMode, RestoreSnapshotRequest};
 use required_units::storage::part_rows;
 
 const KEY_PREFIX: &str = "snapshot-restore-v1:";
@@ -213,7 +213,7 @@ fn transact(
     else {
         return Ok(Err(RestoreRefusal::NotRestorable));
     };
-    let Some(inputs) = restored_inputs(tx, tenant, profile, revision)? else {
+    let Some(inputs) = matching_revision_inputs(tx, tenant, profile, revision)? else {
         return refused(Refusal::InputsChanged);
     };
     let parts = match restored_parts(tx, tenant, profile, revision, &base)? {
@@ -317,7 +317,7 @@ pub(crate) fn snapshot_revision(payload: &str) -> Option<i64> {
 /// The Accepted revision of Build `profile` the snapshot payload records, if
 /// it records one. Node's own snapshots record Source layers and kit choices
 /// only, which a draft cannot hold.
-fn restorable_revision(
+pub(crate) fn restorable_revision(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
@@ -337,7 +337,7 @@ fn restorable_revision(
 /// Revision `revision`'s inputs, or `None` when they do not name Build
 /// `profile`'s current Source layers: Accept refuses such a draft, so it could
 /// never be published.
-fn restored_inputs(
+pub(super) fn matching_revision_inputs(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
@@ -345,8 +345,8 @@ fn restored_inputs(
 ) -> Result<Option<Vec<Value>>> {
     let inputs = rows(
         tx,
-        "SELECT i.source_id,i.source_layer,i.layer_order,i.tracking_kind,i.source_revision_id,i.manifest_digest,i.effective_naming_digest FROM plan_revisions r JOIN plan_revision_inputs i ON i.tenant_id=r.tenant_id AND i.input_set_id=r.input_set_id WHERE r.tenant_id=? AND r.id=? ORDER BY i.layer_order,i.source_id",
-        &[&tenant, &revision],
+        "SELECT i.source_id,i.source_layer,i.layer_order,i.tracking_kind,i.source_revision_id,i.manifest_digest,i.effective_naming_digest FROM plan_revisions r JOIN plan_revision_inputs i ON i.tenant_id=r.tenant_id AND i.input_set_id=r.input_set_id WHERE r.tenant_id=? AND r.profile_id=? AND r.id=? ORDER BY i.layer_order,i.source_id",
+        &[&tenant, &profile, &revision],
     )?;
     let attached = rows(
         tx,

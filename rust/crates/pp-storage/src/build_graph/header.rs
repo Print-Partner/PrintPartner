@@ -61,7 +61,7 @@ pub(crate) fn name_taken(
     )?)
 }
 
-fn summary(
+pub(super) fn summary(
     tx: &Transaction<'_>,
     tenant: &str,
     build: i64,
@@ -137,10 +137,14 @@ pub(super) fn update(
             params![request, tenant, id],
         )?;
     }
-    if patch.archive
-        && let Err(refusal) = archive_in(tx, tenant, id, &profile, repos)?
-    {
-        return Ok(BuildOutcome::ArchiveRefused(refusal));
+    if patch.archive && profile.archived_at.is_none() {
+        if let Err(refusal) = archive_allowed(tx, tenant, id, &profile, repos)? {
+            return Ok(BuildOutcome::ArchiveRefused(refusal));
+        }
+        tx.execute(
+            "UPDATE build_profiles SET archived_at=?1 WHERE tenant_id=?2 AND id=?3",
+            params![auth::catalog_timestamp(), tenant, id],
+        )?;
     }
     if patch.touch {
         tx.execute(
@@ -167,7 +171,7 @@ fn updated(
 /// Node's `archiveAcceptedPlan`: an archived Build stays as it is; otherwise
 /// every Part needs a complete set of progress rows (`assertCompleteProgress`)
 /// and every unit of its accepted Plan must be printed.
-fn archive_in(
+pub(super) fn archive_allowed(
     tx: &Transaction<'_>,
     tenant: &str,
     id: i64,
@@ -217,9 +221,5 @@ fn archive_in(
             return Ok(Err(ArchiveRefusal::Integrity));
         }
     }
-    tx.execute(
-        "UPDATE build_profiles SET archived_at=?1 WHERE tenant_id=?2 AND id=?3",
-        params![auth::catalog_timestamp(), tenant, id],
-    )?;
     Ok(Ok(()))
 }

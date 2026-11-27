@@ -1,5 +1,6 @@
 //! Detached experiments. The writer owns the whole copy transaction.
 use super::*;
+use crate::working_drafts::experiment::{self, Choices};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -44,6 +45,14 @@ pub(crate) fn duplicate(
             name: name.as_str().to_owned(),
         });
     }
+    if at_build_limit(tx, tenant)? {
+        return Ok(BuildOutcome::BuildLimitReached);
+    }
+    let accepted = match experiment::choices(tx, tenant, parent)? {
+        Choices::InputsChanged => return Ok(BuildOutcome::ExperimentInputsChanged),
+        Choices::NoAcceptedPlan => None,
+        Choices::Accepted { revision, inputs } => Some((revision, inputs)),
+    };
     // No accepted pointers, order number, Checkoff, Plate or send state is copied.
     tx.execute(
         "INSERT INTO build_profiles(tenant_id,name,special_request,config_modified_at,last_used_at) SELECT tenant_id,?1,special_request,?2,?2 FROM build_profiles WHERE tenant_id=?3 AND id=?4",
@@ -64,7 +73,9 @@ pub(crate) fn duplicate(
             "INSERT INTO app_settings(tenant_id,key,value) SELECT tenant_id,?1,value FROM app_settings WHERE tenant_id=?2 AND key=?3",
             params![format!("{prefix}{build}"),tenant,format!("{prefix}{parent}")])?;
     }
-    let draft_id = crate::working_drafts::experiment::copy(tx, tenant, parent, build)?;
+    let draft_id = accepted
+        .map(|(revision, inputs)| experiment::copy(tx, tenant, parent, build, revision, &inputs))
+        .transpose()?;
     Ok(BuildOutcome::Duplicated(ExperimentCopy {
         build_id: build,
         parent_build_id: parent,

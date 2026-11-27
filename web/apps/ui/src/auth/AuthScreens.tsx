@@ -16,7 +16,7 @@ import {
   signInProblem,
   statusProblem,
 } from "./messages";
-import { FORGOT_PASSWORD, HOME, RESET_PASSWORD, SETUP, SIGN_IN, nextPath } from "./next";
+import { FORGOT_PASSWORD, HOME, RESET_PASSWORD, SETUP, SIGN_IN, nextPath, withNext } from "./next";
 
 /** Installation-wide auth status. Never cached between visits. */
 function useAuthStatus() {
@@ -187,7 +187,9 @@ export function LoginScreen() {
           </button>
         </form>
       )}
-      {status.isSuccess && <Link to={FORGOT_PASSWORD}>Forgot password?</Link>}
+      {status.isSuccess && (
+        <Link to={withNext(FORGOT_PASSWORD, next === HOME ? undefined : next)}>Forgot password?</Link>
+      )}
     </AuthLayout>
   );
 }
@@ -267,6 +269,8 @@ export function SetupScreen() {
 }
 
 export function ForgotPasswordScreen() {
+  const [params] = useSearchParams();
+  const next = nextPath(params.get("next"), routes);
   const status = useAuthStatus();
   const available = status.data?.recovery_email_available === true;
   const [requested, setRequested] = useState(false);
@@ -296,7 +300,7 @@ export function ForgotPasswordScreen() {
         </form>
       )}
       {requested && <p role="status">{RESET_REQUESTED}</p>}
-      <Link to={SIGN_IN}>Back to sign-in</Link>
+      <Link to={withNext(SIGN_IN, next === HOME ? undefined : next)}>Back to sign-in</Link>
     </AuthLayout>
   );
 }

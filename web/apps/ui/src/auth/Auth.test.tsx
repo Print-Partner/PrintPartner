@@ -285,6 +285,24 @@ describe("sign-in", () => {
     await waitFor(() => expect(path()).toBe("/builds/3"));
   });
 
+  it("keeps the original Build destination on a round trip through recovery", async () => {
+    const next = "/builds/3?tab=parts#inventory";
+    const fetchMock = core({
+      "/auth/status": () => json({ setup_required: false }),
+      "/auth/login": () => json({ user }),
+      "/health": () => json({}),
+      "/api/v2/plans/3": () => json({}),
+    });
+    const { router } = renderAt([`/login?next=${encodeURIComponent(next)}`], fetchMock);
+    fireEvent.click(await screen.findByRole("link", { name: "Forgot password?" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Back to sign-in" }));
+    await signIn();
+    await waitFor(() => {
+      const { pathname, search, hash } = router.state.location;
+      expect(pathname + search + hash).toBe(next);
+    });
+  });
+
   it.each(["//example.com", "https://example.com"])("ignores next=%s", async (next) => {
     const { path } = renderAt(
       [`/login?next=${encodeURIComponent(next)}`],

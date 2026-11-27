@@ -37,6 +37,10 @@ export function nextPath(raw: string | null, routes: RouteObject[]): string {
   return path;
 }
 
+export function withNext(pathname: string, next?: string): string {
+  return next ? `${pathname}?${new URLSearchParams({ next })}` : pathname;
+}
+
 /** The sign-in screen's address that returns to this page afterwards. */
 export function signInFor({
   pathname,
@@ -48,5 +52,5 @@ export function signInFor({
   hash?: string;
 }): string {
   if (pathname === "/" || isAuthPath(pathname)) return SIGN_IN;
-  return `${SIGN_IN}?${new URLSearchParams({ next: `${pathname}${search}${hash}` })}`;
+  return withNext(SIGN_IN, `${pathname}${search}${hash}`);
 }

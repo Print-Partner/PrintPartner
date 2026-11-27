@@ -198,7 +198,7 @@ async fn catalog(
     catalog_response(body, custom)
 }
 
-fn catalog_body() -> Option<Value> {
+pub(crate) fn catalog_body() -> Option<Value> {
     let mut body: Value = serde_json::from_str(include_str!(
         // ast-grep-ignore: no-writer-family-literal -- Bundled catalog is read-only.
         "../../../../web/apps/server/src/data/ambrosia_fallback.json"

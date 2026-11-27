@@ -450,7 +450,7 @@ fn read_router_with_updates(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         &accepted_client,
         admin_files.clone(),
-        (filament_client, app_settings),
+        (filament_client.clone(), app_settings),
         runtime.server.update_checks,
     )?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
@@ -477,6 +477,7 @@ fn read_router_with_updates(
         planning: planning_client,
         progress: checkoff_client,
         accepted: accepted_client,
+        filaments: filament_client,
         review_observer: Some(Arc::new(review_observer)),
         farm: mcp_farm(farm_clients, runtime.farm, settings)?,
     };

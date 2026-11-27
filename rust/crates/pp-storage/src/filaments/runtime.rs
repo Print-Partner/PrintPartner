@@ -1,5 +1,7 @@
 //! Credentialed custom-filament mutations and catalog inputs on the writer.
-use crate::{Envelope, Shared, WriterOwner, auth, read_model::Credential};
+use crate::{
+    Envelope, SettingsClient, Shared, WriterFailure, WriterOwner, auth, read_model::Credential,
+};
 use anyhow::{Result, anyhow};
 use pp_domain::{PositiveId, features::Feature};
 use rusqlite::Connection;
@@ -17,16 +19,22 @@ const STORE_FILE: &str = "custom_filaments.json";
 #[derive(Clone)]
 pub struct FilamentClient {
     shared: Arc<Shared>,
+    reads: SettingsClient,
     policy: auth::AuthPolicy,
     directory: PathBuf,
 }
 pub enum Request {
     Add(Value),
+    AddNamedColor(NamedColor),
     Delete(String),
     Catalog(std::collections::HashMap<String, String>),
 }
 pub enum Outcome {
     Added(Value),
+    NamedColor {
+        filament: Value,
+        replay: bool,
+    },
     Deleted,
     Catalog {
         custom: String,
@@ -35,6 +43,47 @@ pub enum Outcome {
         allowed: bool,
     },
     Refused(u16, &'static str, &'static str),
+}
+
+pub struct NamedColor {
+    display_name: String,
+    hex: String,
+    product_line: String,
+}
+
+impl NamedColor {
+    pub fn new(display_name: &str, hex: &str, product_line: &str) -> Option<Self> {
+        let display_name = display_name.trim();
+        let hex = hex.trim();
+        let hex = hex.strip_prefix('#').unwrap_or(hex);
+        if display_name.is_empty() || hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let product_line = product_line.trim();
+        Some(Self {
+            display_name: display_name.into(),
+            hex: format!("#{}", hex.to_ascii_lowercase()),
+            product_line: if product_line.is_empty() {
+                "Custom"
+            } else {
+                product_line
+            }
+            .into(),
+        })
+    }
+
+    fn matches(&self, entry: &Value) -> bool {
+        entry["display_name"]
+            .as_str()
+            .is_some_and(|name| name.to_lowercase() == self.display_name.to_lowercase())
+            && entry["hex"].as_str().is_some_and(|hex| {
+                self.hex[1..].eq_ignore_ascii_case(hex.strip_prefix('#').unwrap_or(hex))
+            })
+            && entry["product_line"]
+                .as_str()
+                .is_some_and(|line| line.to_lowercase() == self.product_line.to_lowercase())
+    }
 }
 pub(crate) struct Command {
     policy: auth::AuthPolicy,
@@ -53,6 +102,7 @@ impl WriterOwner {
         auth::validate_policy(policy)?;
         Ok(FilamentClient {
             shared: self.client.shared.clone(),
+            reads: self.client(),
             policy,
             directory: self
                 .lease
@@ -64,6 +114,23 @@ impl WriterOwner {
     }
 }
 impl FilamentClient {
+    pub fn local_colors(
+        &self,
+        credential: Credential,
+        wait: Duration,
+    ) -> Result<String, WriterFailure> {
+        self.reads.read(
+            "filaments.local_colors",
+            &AtomicBool::new(false),
+            wait,
+            |tx| {
+                crate::write::authorize(tx, &credential, self.policy)?;
+                // The installation catalog is published with an atomic rename.
+                catalog_custom(&self.directory).map_err(WriterFailure::from)
+            },
+        )?
+    }
+
     pub fn submit(
         &self,
         credential: Credential,
@@ -93,9 +160,13 @@ pub(super) fn execute(
     deadline: crate::writer_admission::Deadline,
 ) -> Result<Outcome> {
     let tx = crate::writer_admission::begin_immediate(connection, deadline)?;
-    let tenant = crate::read_model::read_tenant(&tx, &command.credential, command.policy)?;
-    if let Request::Catalog(query) = command.request {
-        return catalog_inputs(&tx, &tenant, &command.directory, query);
+    if matches!(command.request, Request::AddNamedColor(_)) {
+        crate::write::authorize(&tx, &command.credential, command.policy)?;
+    } else {
+        let tenant = crate::read_model::read_tenant(&tx, &command.credential, command.policy)?;
+        if let Request::Catalog(query) = command.request {
+            return catalog_inputs(&tx, &tenant, &command.directory, query);
+        }
     }
     let path = command.directory.join(STORE_FILE);
     let mut corrupt = None;
@@ -147,9 +218,21 @@ pub(super) fn execute(
                     ));
                 }
             };
-            let entry = json!({"id":format!("custom-{}", hex::encode(rand::random::<[u8;4]>())), "display_name":name, "product_line":if line.is_empty() {"Custom"} else {line}, "hex":format!("#{hex}"), "combo_label":name});
+            let entry = new_entry(
+                &name,
+                &format!("#{hex}"),
+                if line.is_empty() { "Custom" } else { line },
+            );
             entries.push(entry.clone());
             Outcome::Added(entry)
+        }
+        Request::AddNamedColor(color) => {
+            let (filament, replay) = add_or_reuse(entries, color);
+            let outcome = Outcome::NamedColor { filament, replay };
+            if replay {
+                return Ok(outcome);
+            }
+            outcome
         }
         Request::Delete(id) => {
             let before = entries.len();
@@ -172,6 +255,40 @@ pub(super) fn execute(
     )?;
     tx.commit()?;
     Ok(outcome)
+}
+
+fn has_entry_id(entry: &Value) -> bool {
+    entry["id"].as_str().is_some_and(|id| !id.trim().is_empty())
+}
+
+fn add_or_reuse(entries: &mut Vec<Value>, color: NamedColor) -> (Value, bool) {
+    let matching = entries
+        .iter_mut()
+        .filter(|entry| color.matches(entry))
+        .min_by_key(|entry| !has_entry_id(entry));
+    match matching {
+        Some(existing) if has_entry_id(existing) => (existing.clone(), true),
+        Some(existing) => {
+            existing["id"] = json!(new_id());
+            (existing.clone(), false)
+        }
+        None => {
+            let entry = new_entry(&color.display_name, &color.hex, &color.product_line);
+            entries.push(entry.clone());
+            (entry, false)
+        }
+    }
+}
+
+fn new_id() -> String {
+    format!("custom-{}", hex::encode(rand::random::<[u8; 4]>()))
+}
+
+fn new_entry(name: &str, hex: &str, line: &str) -> Value {
+    json!({
+        "id": new_id(),
+        "display_name": name, "product_line": line, "hex": hex, "combo_label": name
+    })
 }
 fn catalog_inputs(
     tx: &rusqlite::Transaction<'_>,

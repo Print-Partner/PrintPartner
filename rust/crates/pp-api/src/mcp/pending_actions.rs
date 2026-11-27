@@ -1,5 +1,6 @@
 use super::{
-    ErrorData, PresentedCredential, ProductMcp, ToolResult, plan_accept, plan_history_changes,
+    ErrorData, PresentedCredential, ProductMcp, ToolResult, filament_catalog, plan_accept,
+    plan_history_changes,
 };
 use pp_services::mcp_domain::{DomainPort, ProposedAction};
 use pp_storage::{
@@ -246,6 +247,8 @@ impl ProductMcp {
             self.confirm_accept(action, presented).await
         } else if plan_history_changes::TOOLS.contains(&action.action_type.as_str()) {
             self.confirm_history_change(action, presented).await
+        } else if action.action_type == filament_catalog::ADD {
+            self.confirm_custom_filament(action, presented).await
         } else {
             match self
                 .in_tools(Some(presented), move |tools| {

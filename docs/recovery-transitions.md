@@ -67,6 +67,30 @@ in GRE-1427 is separate from this manual Sync proof.
 
 ### Other durable work and app handoffs
 
+**Accepted Plate export and local slicer handoff (GRE-2008).** The Rust
+desktop launcher serves the managed Plate ZIP and publishes one verified
+3MF on an explicit handoff to a configured local inbox. The published bytes
+match the requested Plate in the ZIP. A retry after restart returns the
+same filename with `already_delivered: true`; conflicting bytes are not
+overwritten. A partial pending file is not a delivery and is replaced only
+when the operator requests delivery. The Rust server still serves the ZIP
+but does not mount the local picker or handoff.
+
+Neither `POST /jobs/export-accepted-plate-3mf` nor
+`POST /slicer-instances/:id/open-accepted-plates`, including their `/api/v1`
+aliases, enqueues a job, delivers a file or falls back to Node on the Rust
+launcher. The test runs with no Node executable and only a disposable
+inbox. It does not launch a slicer, prove parity for the other exports, or
+retire the original Node worker. See [Local slicer handoff](api.md#local-slicer-handoff)
+for the replacement contract.
+
+Run the launcher proof with:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(plate_export_transition::)'
+```
+
 - The Node export groups are `export.accepted-plate-3mf`,
   `export.checklist-html`, `export.direct-3mf`, `export.kit-bundle`, and
   `export.stl-pack`. Each includes both job POST aliases and its job runner;

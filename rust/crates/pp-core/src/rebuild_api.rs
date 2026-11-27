@@ -485,6 +485,7 @@ fn read_router_with_updates(
         )) as Arc<dyn pp_services::native_slicers::Handoff>
     });
     let accepted = accepted_routes(config.clone(), accepted_client.clone(), slicer)?;
+    let board = pp_api::builds::board::board_router(config.clone(), accepted_client.board());
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
     let events = events_router(config.clone(), events_client, StreamLimits::default());
@@ -522,6 +523,7 @@ fn read_router_with_updates(
             .merge(catalog)
             .merge(accepted)
             .merge(handoff)
+            .merge(board)
             .merge(history_router(config.clone(), history_client))
             .merge(planning)
             .merge(workflow)

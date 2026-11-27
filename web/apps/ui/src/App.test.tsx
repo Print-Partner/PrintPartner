@@ -60,7 +60,7 @@ describe("App frame", () => {
 });
 
 describe("FRM-01 rail and G shortcuts", () => {
-  it("lists the five destinations in order with their shortcuts", () => {
+  it("lists the destinations in order with their shortcuts", () => {
     renderAt("/today");
     const links = within(screen.getByRole("navigation", { name: "Main" })).getAllByRole("link");
     expect(links.map((l) => l.textContent)).toEqual([
@@ -69,6 +69,7 @@ describe("FRM-01 rail and G shortcuts", () => {
       "FarmG F",
       "LibraryG L",
       "SettingsG ,",
+      "BoardG N",
     ]);
     expect(links[0].getAttribute("aria-current")).toBe("page");
   });
@@ -79,6 +80,7 @@ describe("FRM-01 rail and G shortcuts", () => {
     ["f", "/farm", "Farm"],
     ["l", "/library", "Library"],
     [",", "/settings", "Settings"],
+    ["n", "/board", "Board"],
   ])("G then %s goes to %s", (key, to, title) => {
     const { path } = renderAt(key === "t" ? "/settings" : "/today");
     press("g");
@@ -142,7 +144,7 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     press("k", { ctrlKey: true });
     const input = screen.getByRole("combobox");
     fireEvent.change(input, { target: { value: "go to" } });
-    expect(screen.getAllByRole("option")).toHaveLength(5);
+    expect(screen.getAllByRole("option")).toHaveLength(6);
     press("ArrowDown", {}, input);
     press("ArrowDown", {}, input);
     const active = document.getElementById(input.getAttribute("aria-activedescendant")!);
@@ -180,7 +182,7 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
       .getAllByRole("row")
       .slice(1)
       .map((r) => r.querySelector("kbd")?.textContent);
-    expect(keys).toEqual(["G T", "G B", "G F", "G L", "G ,", "Cmd/Ctrl K", "?", "Esc"]);
+    expect(keys).toEqual(["G T", "G B", "G F", "G L", "G ,", "G N", "Cmd/Ctrl K", "?", "Esc"]);
     expect(within(dialog).getByRole("heading", { name: "Keyboard shortcuts" })).toBeTruthy();
     expect(dialog.contains(document.activeElement)).toBe(true);
     press("g", {}, document.activeElement!);

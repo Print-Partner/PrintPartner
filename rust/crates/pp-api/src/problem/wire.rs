@@ -184,6 +184,9 @@ problem_codes! {
     UnplacedUnits = "unplaced_units";
     ThreeMfTooLarge = "three_mf_too_large";
     InvalidDirectSelection = "invalid_direct_selection";
+    BoardBuildNotFound = "board_build_not_found";
+    InvalidBoardNote = "invalid_board_note";
+    BoardNoteLimit = "board_note_limit";
     DirectPackingConflict = "direct_packing_conflict";
     ArtifactGeometryMismatch = "artifact_geometry_mismatch";
     SourceFilesUnavailable = "source_files_unavailable";

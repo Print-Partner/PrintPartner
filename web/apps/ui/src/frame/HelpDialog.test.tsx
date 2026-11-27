@@ -38,7 +38,7 @@ describe("Help explains destinations and draft acceptance", () => {
     expect(dialog.contains(document.activeElement)).toBe(true);
   });
 
-  it("describes the five destinations in rail order", () => {
+  it("describes the destinations in rail order", () => {
     const { dialog } = openHelp();
     const links = within(dialog).getAllByRole("link");
     expect(links.map((link) => link.textContent)).toEqual([
@@ -47,6 +47,7 @@ describe("Help explains destinations and draft acceptance", () => {
       "Farm",
       "Library",
       "Settings",
+      "Board",
     ]);
     for (const destination of DESTINATIONS) {
       expect(within(dialog).getByText(destination.help + ".")).toBeTruthy();

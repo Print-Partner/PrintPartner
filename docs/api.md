@@ -101,6 +101,22 @@ create and update requests, confine content to the Source's managed workspace,
 and return `local_path: null`. Clients must use the `content_available` boolean
 to decide whether Source files and documents are available.
 
+### Private Board (Rust-only)
+
+`GET /api/v2/board/notes` returns `{ "notes": [...] }` newest first.
+`GET /api/v2/board/builds` returns the owner's Build IDs and names as `{ "builds": [...] }`,
+ordered by name and ID. This picker does not load the full Plan summaries.
+`POST /api/v2/board/notes` takes `{ "build_id": 1, "body": "Check the fit." }`
+and returns 200 with the saved note. Each note contains `id`, `build_id`, the
+current `build_name`, `body` and `created_at`. Deleting a Build removes its notes.
+
+These routes require a session or a tenant API key (401 without a valid credential).
+The feed only shows the authenticated owner's Builds. Creating a note for a
+missing or foreign Build returns 404 `board_build_not_found`. A note is plain text,
+trimmed to 1–2,000 UTF-8 bytes and without control characters other than tabs
+and line breaks (400 `invalid_board_note`). A Build holds up to 20 notes
+(409 `board_note_limit`). No legacy posts, comments, covers or external sharing.
+
 ### Builds and Plans
 
 The API retains the historical `plans` resource name for Builds.

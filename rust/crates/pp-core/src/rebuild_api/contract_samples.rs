@@ -38,6 +38,10 @@ const SAMPLE_BODIES: &[(&str, Sample)] = &[
                 "value": true}]})
     }),
     ("claimUnattributedPrint", || json!({"profile_id": 1})),
+    (
+        "createBoardNote",
+        || json!({"build_id": 1, "body": "Client contract note"}),
+    ),
     ("createBuild", || json!({"name": "Client contract create"})),
     (
         "createIntegration",

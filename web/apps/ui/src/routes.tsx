@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Navigate, type RouteObject } from "react-router";
 import { ForgotPasswordScreen, LoginScreen, ResetPasswordScreen, SetupScreen } from "./auth/AuthScreens";
 import { FORGOT_PASSWORD, RESET_PASSWORD, SETUP, SIGN_IN } from "./auth/next";
+import { BoardScreen } from "./board/BoardScreen";
 import { BuildCheckoff } from "./builds/BuildCheckoff";
 import { BuildHistory } from "./builds/BuildHistory";
 import { BuildPlan } from "./builds/BuildPlan";
@@ -81,6 +82,8 @@ export const routes: RouteObject[] = [
             <LibraryScreen />
           ) : d.path === "/settings" ? (
             <SettingsScreen />
+          ) : d.path === "/board" ? (
+            <BoardScreen />
           ) : (
             <DestinationScreen destination={d} />
           ),

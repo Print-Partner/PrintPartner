@@ -31,7 +31,7 @@ Three facts follow and they govern every screen below.
 
 ## Information architecture
 
-Five destinations in a left rail, plus a command palette.
+Six destinations in a left rail, plus a command palette.
 
 | Destination | Key | Holds |
 | --- | --- | --- |
@@ -40,6 +40,7 @@ Five destinations in a left rail, plus a command palette.
 | Farm | `G F` | Printers, queue, farm log |
 | Library | `G L` | Library Sources, files, thumbnails, import, sync and revisions |
 | Settings | `G ,` | Modules, integrations, sharing, devices, backups |
+| Board | `G N` | Private Build notes, newest first, with a link to each note's Build |
 
 The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens the palette; `?` opens Help, which explains how Plan changes save and lists the shortcuts.
 
@@ -57,7 +58,7 @@ Domain words come from [GLOSSARY.md](../../GLOSSARY.md). Build is the container;
 | Per-page polling | Live events | Same 10,905 requests |
 | Backup as the only undo | Backups stay for disasters; History is the undo | Snapshots were a disaster tool used as undo |
 | Stale flag on every Build | Shown only when open work needs a decision | 8 of 10 stale Builds were fully checked off |
-| Community board | Dropped | Single-user product |
+| Community board | Replaced by a private Board for Build notes | No accounts for sharing, external posts, comments or recipe imports |
 | Coloured stage dots | Dropped | Colour-only status |
 
 ## The three flows that matter

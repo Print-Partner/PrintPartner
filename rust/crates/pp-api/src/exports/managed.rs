@@ -68,7 +68,7 @@ pub(super) async fn download(
                 captured.plan.plan_version,
                 captured.plate_revision_number,
             );
-            let bytes = render(&app.client, captured, &cancelled)?;
+            let bytes = render(&app.client, captured, None, &cancelled)?;
             Ok((filename, bytes))
         })
         .await;
@@ -79,9 +79,10 @@ pub(super) async fn download(
     }
 }
 
-fn render(
+pub(super) fn render(
     client: &ReadClient,
     captured: ManagedExport,
+    ordinal: Option<u32>,
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, Failure> {
     let plan = &captured.plan;
@@ -90,6 +91,9 @@ fn render(
     let mut bundle = Bundle::new(MAX_OUTPUT_BYTES);
     let mut plates = Vec::with_capacity(captured.plates.len());
     for plate in captured.plates {
+        if ordinal.is_some_and(|ordinal| ordinal != plate.ordinal) {
+            continue;
+        }
         let info = plate.input;
         let mut model = bundle.model().map_err(Failure::encode)?;
         let mut units = Vec::with_capacity(info.units.len());
@@ -143,6 +147,9 @@ fn render(
         if cancelled.load(Ordering::Acquire) {
             return Err(Failure::Cancelled);
         }
+        if ordinal.is_some() {
+            return model.package(MAX_OUTPUT_BYTES).map_err(Failure::encode);
+        }
         let entry = bundle
             .plate(plate.ordinal, model)
             .map_err(Failure::encode)?;
@@ -151,6 +158,9 @@ fn render(
             "printer": { "id": info.printer_id, "name": info.printer_name, "model": info.printer_model },
             "units": units,
         }));
+    }
+    if ordinal.is_some() {
+        return Err(Failure::PlateNotFound);
     }
     bundle
         .finish(&json!({
@@ -259,6 +269,7 @@ impl GeometryBudget {
 pub(super) enum Failure {
     Busy,
     RevisionRequired,
+    PlateNotFound,
     Capture(ManagedExportFailure),
     Limit(&'static str),
     Source {
@@ -310,6 +321,9 @@ impl ToProblem for Failure {
                 "plate_revision_id must name the Plate revision to export",
                 Code::PlateRevisionRequired,
             ),
+            Self::PlateNotFound => {
+                return problem::problem(Status::NOT_FOUND, "Managed Plate not found", None);
+            }
             Self::Capture(Capture::Storage(failure)) => return failure.to_problem(),
             Self::Capture(Capture::BuildNotFound) => {
                 return problem::problem(Status::NOT_FOUND, "Build not found", None);

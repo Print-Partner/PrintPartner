@@ -27,5 +27,5 @@ A change to source inputs invalidates the draft or accepted state that depends o
 | Exports | STL packs, HTML checklists, 3MF and kit bundles. Each accepted Plate revision is immutable, so downloads and handoffs stay tied to the Plan that produced them. | [3MF export validation](../3MF_EXPORT_VALIDATION.md) |
 | Printer drivers and send queue | Moonraker, PrusaLink and Bambu status, and the send queue. | [Printer setup](../integrations/PRINTER_SETUP.md) |
 | Spoolman | Filament inventory and usage deduction. | [Spoolman](../integrations/SPOOLMAN.md) |
-| Slicer handoff | Handoff to OrcaSlicer and Bambu Studio. Slicing stays in the slicer. | none yet |
+| Slicer handoff | Delivery of a managed Plate's verified 3MF to a configured local inbox. Slicing stays in the slicer. | [Local slicer handoff](../api.md#local-slicer-handoff) |
 | Integrations | Home Assistant, webhooks and Discord, and profile sync. | none yet |

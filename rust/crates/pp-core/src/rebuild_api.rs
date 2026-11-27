@@ -10,7 +10,7 @@ use pp_api::{
     checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     events::{StreamLimits, events_router},
-    exports::exports_router,
+    exports::exports_router_with_slicer,
     file_assignments::file_assignments_router,
     history::history_router,
     integrations::integrations_router,
@@ -50,6 +50,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod slicer_inbox;
 mod web_discovery;
 
 pub struct AuthRoutes {
@@ -195,8 +196,12 @@ fn checkoff_routes(
 }
 
 /// Accepted Plan reads and the exports built from them, on one `ReadClient`.
-fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Router> {
-    let exports = exports_router(config.clone(), client.clone());
+fn accepted_routes(
+    config: AcceptedHttpConfig,
+    client: ReadClient,
+    slicer: Option<Arc<dyn pp_services::native_slicers::Handoff>>,
+) -> Result<Router> {
+    let exports = exports_router_with_slicer(config.clone(), client.clone(), slicer);
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     Ok(accepted_router(
         config.with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
@@ -260,6 +265,7 @@ pub(crate) struct RuntimeInputs {
     pub(crate) server: ServerOptions,
     pub(crate) farm: Arc<dyn pp_api::farm::FarmObservations>,
     pub(crate) web_discovery: Option<Arc<dyn pp_api::mcp::web_discovery::Discovery>>,
+    pub(crate) local_slicers: bool,
 }
 
 impl RuntimeInputs {
@@ -277,6 +283,7 @@ impl RuntimeInputs {
             },
             farm: Arc::new(farm.clone()),
             web_discovery: web_discovery::WebDiscovery::from_env()?,
+            local_slicers: !update_checks && !explicit_listener,
         })
     }
 
@@ -287,6 +294,7 @@ impl RuntimeInputs {
             server: ServerOptions::default(),
             farm: Arc::new(crate::printer_status::LateFarm::default()),
             web_discovery: None,
+            local_slicers: false,
         }
     }
 }
@@ -459,7 +467,12 @@ fn read_router_with_updates(
         runtime.server.update_checks,
     )?;
     let modules = setup_routes(&owner, policy, config.clone(), features)?;
-    let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
+    let slicer = runtime.local_slicers.then(|| {
+        Arc::new(slicer_inbox::LocalInbox::new(
+            admin_files.data_directory().into(),
+        )) as Arc<dyn pp_services::native_slicers::Handoff>
+    });
+    let accepted = accepted_routes(config.clone(), accepted_client.clone(), slicer)?;
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());
     let events = events_router(config.clone(), events_client, StreamLimits::default());

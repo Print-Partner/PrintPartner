@@ -13,11 +13,13 @@ Print Partner exposes product operations to AI assistants over the Model Context
 
 ## Decide proposals
 
-In Rust, `list_pending_actions` returns the installation's open proposals in any authenticated MCP session, including after reconnect or restart. Each row includes `staged_by` (the MCP client name), `created_at`, `expires_at`, `depends_on`, and `state`. The list returns the newest 200 open proposals, oldest first, and reports `omitted` if more exist.
+In Rust, `list_pending_actions` returns the installation's open proposals in any authenticated MCP session, including after reconnect or restart. Each row includes `staged_by` (the MCP client name or `UI`), `created_at`, `expires_at`, `depends_on`, and `state`. The list returns the newest 200 open proposals, oldest first, and reports `omitted` if more exist.
 
 `confirm_apply` takes one proposal by `action_id` and runs its existing Rust operation. It refuses an expired proposal or one with an unapplied dependency; `blocked_by` identifies the dependency to resolve first. A refusal that wrote nothing leaves the proposal pending. An uncertain outcome stays visible as `unknown` and cannot be applied again. Check the affected work before proposing again.
 
 `dismiss_proposed_action` removes an open proposal from the list without running its operation. It cannot dismiss a proposal while it is applying. A second decision normally returns `already_applied` or `already_dismissed`; Checkoff can return its stored receipt instead, without writing again.
+
+Open **Apply** in the replacement UI to review that same queue. It rereads the queue while open and refreshes it after a decision. HTTP applies and dismisses through the same Rust operations as MCP; expired or uncertain proposals remain visible, and confirming out of order names the blocking proposal. In the Plan tab, **Review and accept → Stage for Apply** stages the exact reviewed revision without publishing it. Apply it in the panel or with `confirm_apply`. If the draft changes first, review and stage the new revision.
 
 ## Ported tools
 

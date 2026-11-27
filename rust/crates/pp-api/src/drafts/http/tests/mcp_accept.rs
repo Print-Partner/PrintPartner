@@ -217,6 +217,120 @@ async fn proposed_header() -> ReadServer {
     header_draft(true).await
 }
 
+async fn reviewed_request(server: &ReadServer) -> Value {
+    let preview = server
+        .request(Method::GET, "/api/v2/plans/1/drafts/2/accept-preview")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let mut revision = preview["revision"].clone();
+    revision.as_object_mut().unwrap().remove("draft_id");
+    revision
+}
+
+fn stage_reviewed(mcp: &Mcp, revision: Value) -> reqwest::RequestBuilder {
+    mcp.client
+        .post(format!("{}/api/v2/plans/1/drafts/2/propose", mcp.origin))
+        .header("Origin", &mcp.origin)
+        .header("Cookie", FIXTURE_COOKIE)
+        .json(&revision)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_draft_staged_with_the_ui_session_can_be_confirmed_over_mcp() {
+    let server = proposed_header().await;
+    server
+        .sql()
+        .execute(
+            "DELETE FROM app_settings WHERE tenant_id='default' AND key='build_planning.v1.1'",
+            [],
+        )
+        .unwrap();
+    let mcp = Mcp::start(&server).await;
+    let revision = reviewed_request(&server).await;
+    let mut stale = revision.clone();
+    stale["expected_header_version"] = json!(0);
+    let rejected = stage_reviewed(&mcp, stale).send().await.unwrap();
+    assert_eq!(rejected.status(), 409);
+    assert_eq!(
+        rejected.json::<Value>().await.unwrap()["code"],
+        "draft_changed"
+    );
+    let staged = stage_reviewed(&mcp, revision)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(staged["staged_by"], "UI");
+    assert_ne!(build_name(&server), "Renamed by MCP");
+    let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
+    assert_eq!(pending["actions"][0]["id"], staged["id"]);
+    let (failed, confirmed) = mcp.confirm(staged["id"].as_str().unwrap()).await;
+    assert!(!failed, "{confirmed}");
+    assert_eq!(build_name(&server), "Renamed by MCP");
+    assert_eq!(snapshot_headers(&server), 1);
+    drop(mcp);
+    server.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_draft_staged_before_a_newer_accept_does_not_report_success() {
+    let server = proposed_header().await;
+    let mcp = Mcp::start(&server).await;
+    let stage = async || {
+        stage_reviewed(&mcp, reviewed_request(&server).await)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let older = stage().await;
+    server
+        .sql()
+        .execute(
+            "UPDATE plan_draft_headers SET name='Newer header', header_version=2 WHERE draft_id=2",
+            [],
+        )
+        .unwrap();
+    let newer = stage().await;
+    let (failed, confirmed) = mcp.confirm(newer["id"].as_str().unwrap()).await;
+    assert!(!failed, "{confirmed}");
+
+    let id = older["id"].as_str().unwrap();
+    let refused = mcp
+        .client
+        .post(format!("{}/api/v2/proposals/{id}/apply", mcp.origin))
+        .header("Origin", &mcp.origin)
+        .header("Cookie", FIXTURE_COOKIE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 409);
+    assert_eq!(
+        refused.json::<Value>().await.unwrap()["code"],
+        "already_applied"
+    );
+    let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
+    assert_eq!(pending["actions"][0]["id"], id);
+    assert_eq!(build_name(&server), "Newer header");
+    assert_eq!(snapshot_headers(&server), 1);
+    drop(mcp);
+    server.close().await;
+}
+
 fn build_name(server: &ReadServer) -> String {
     server
         .sql()

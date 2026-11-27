@@ -38,6 +38,8 @@ mod role_filament;
 mod session_keys;
 #[path = "tests/source_roles.rs"]
 mod source_roles;
+#[path = "tests/web_discovery.rs"]
+mod web_reads;
 #[path = "tests/writer_failures.rs"]
 mod writer_failures;
 use mcp_rpc::{policy, rpc};

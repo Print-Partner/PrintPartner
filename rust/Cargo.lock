@@ -3549,6 +3549,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "dom_query",
+ "encoding_rs",
  "flate2",
  "fs2",
  "hex",
@@ -3566,6 +3568,7 @@ dependencies = [
  "pp-source",
  "pp-storage",
  "pp-testkit",
+ "quick-xml",
  "rand 0.9.5",
  "regress 0.11.1",
  "reqwest",

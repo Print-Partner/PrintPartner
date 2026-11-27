@@ -12,8 +12,8 @@
 //! - ignores `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`, and never retries.
 //!
 //! reqwest does not call the resolver for an IP-literal host. Callers check a
-//! literal host with [`Policy::allows`] before the first request and follow
-//! redirects only within that origin.
+//! literal host with [`Policy::allows`] before the first request and either
+//! restrict redirects to that origin or check the literal host on every hop.
 
 use crate::outbound::{Resolver, permitted};
 use anyhow::Result;

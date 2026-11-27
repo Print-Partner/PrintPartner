@@ -697,10 +697,12 @@ impl ServerHandler for ProductMcp {
         plan_checkoff::describe_inputs(&mut tools);
         plan_history_changes::describe(&mut tools);
         filament_catalog::describe(&mut tools);
+        guide::describe(&mut tools);
         let mut tools: ListToolsResult = serde_json::from_value(tools).map_err(internal)?;
-        tools
-            .tools
-            .retain(|tool| web_discovery::enabled(&tool.name, self.reads.web_discovery.as_deref()));
+        tools.tools.retain(|tool| {
+            (tool.name != guide::URL || self.reads.web_discovery.is_some())
+                && web_discovery::enabled(&tool.name, self.reads.web_discovery.as_deref())
+        });
         if let Some(list) = tools
             .tools
             .iter_mut()
@@ -736,6 +738,16 @@ impl ServerHandler for ProductMcp {
         let result = match request.name.as_ref() {
             "get_build_workflow" => self.build_workflow(&arguments, presented).await,
             filament_catalog::MATCH => self.find_filament_matches(&arguments, presented).await,
+            guide::IMPORT => {
+                self.propose_guide_note(arguments, presented, staged_by)
+                    .await
+            }
+            name @ (guide::TEXT | guide::URL) => {
+                tokio::select! {
+                    () = context.ct.cancelled() => return Err(internal("Guide intake cancelled")),
+                    result = guide::ingest(name, &arguments, self.reads.web_discovery.as_deref()) => result,
+                }
+            }
             name if web_discovery::TOOLS.contains(&name) => {
                 tokio::select! {
                     () = context.ct.cancelled() => return Err(internal("Web discovery cancelled")),
@@ -791,6 +803,8 @@ mod draft_parts;
 mod farm_status;
 #[path = "mcp/filament_catalog.rs"]
 mod filament_catalog;
+#[path = "mcp/guide.rs"]
+mod guide;
 #[path = "mcp/import_inputs.rs"]
 mod import_inputs;
 #[path = "mcp/pending_actions.rs"]

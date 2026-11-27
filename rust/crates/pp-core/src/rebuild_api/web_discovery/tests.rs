@@ -163,12 +163,13 @@ fn bounds_and_attributes_remote_text() {
 
     let page = page_text(
         hits[0].url.clone(),
-        b"<title>Kit &amp; Guide</title><script>omit</script><p>Step one</p><p>Step two</p>",
+        b"<title>Kit &amp; Guide</title><script>omit</script><p><a href='/guide#step'>Step one</a></p><p><a href='mailto:kit@example.com'>Step two</a></p>",
         content_type("text/html"),
     )
     .unwrap();
     assert_eq!(page.title.as_deref(), Some("Kit & Guide"));
     assert_eq!(page.text, "Step one\n\nStep two");
+    assert_eq!(page.links, ["https://docs.example.com/guide#step"]);
     let page = page_text(
         page.url,
         "é".repeat(MAX_TEXT).as_bytes(),

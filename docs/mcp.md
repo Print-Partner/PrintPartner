@@ -20,6 +20,14 @@ Set `PP_ASSISTANT_WEB_DISCOVERY=1` on the Rust runtime and restart to enable `fe
 
 Both tools cap remote responses at 512 KiB, use a 12-second deadline and mark the returned text as untrusted evidence. Neither stores a page, adds guide evidence, runs instructions in a page, nor changes product data.
 
+## Read and save guide evidence
+
+- `ingest_guide_text { text }` extracts candidate printer, ref, add-on, replacement, and link hints from pasted text. It never calls a network provider.
+- `ingest_guide_url { url }` uses the same checked fetch as `fetch_web_page`. It requires `PP_ASSISTANT_WEB_DISCOVERY=1`, but no search provider. It returns the final URL and never fetches the links it finds.
+- Both ingest tools reject guide text over 48,000 bytes and return an excerpt of up to 12,000 bytes. Extraction is heuristic: verify candidates against the catalog before using them. Ingest never saves the guide or changes assistant policy.
+- `import_guide_notes { source_name, body_markdown, title?, guide_url? }` stages a Source note. Use the exact name from `list_sources`. Pass the guide URL when known; Rust appends it to the note without fetching it. The final body is limited to 20,000 bytes and the title to 300 bytes. The default title is `Guide: <Source>`.
+- Apply saves the reviewed Markdown against the same Source, or updates a Source-level note with the same title. A removed or renamed Source requires a fresh proposal. Applying equivalent content does not rewrite the note.
+
 ## Decide proposals
 
 In Rust, `list_pending_actions` returns the installation's open proposals in any authenticated MCP session, including after reconnect or restart. Each row includes `staged_by` (the MCP client name or `UI`), `created_at`, `expires_at`, `depends_on`, and `state`. The list returns the newest 200 open proposals, oldest first, and reports `omitted` if more exist.

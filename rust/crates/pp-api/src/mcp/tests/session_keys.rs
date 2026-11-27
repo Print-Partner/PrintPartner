@@ -163,7 +163,7 @@ async fn propose_named_build(
     proposal["action"]["id"].as_str().unwrap().to_owned()
 }
 
-async fn ui(server: &McpServer, method: Method, suffix: &str) -> (u16, Value) {
+pub(super) async fn ui(server: &McpServer, method: Method, suffix: &str) -> (u16, Value) {
     let response = server
         .client
         .request(

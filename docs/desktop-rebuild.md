@@ -62,6 +62,9 @@ Core tests isolate environment changes in child processes. They cover absent, di
 
 ## Rust-only product entry point
 
+See [Recovery transition inventory](recovery-transitions.md) for the
+route and worker boundaries that must be checked before a cutover rehearsal.
+
 `pp-desktop` starts through `CoreRuntime::start_for_launcher`; `pp-server`/Docker uses `CoreRuntime::start_for_server`.
 Both run Rust only with the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or `true`. Desktop update checks are fixed off, with repository, version and cache environment overrides ignored.
 Only the server entry point allows environment-driven update checks. By coordinator decision these checks reject redirects, unlike Node's default fetch; renamed or transferred repositories need their canonical `GITHUB_REPO` name (see [update checks](gre-438-admin-http.md#update-checks-printer-bindings-help-and-openapi)). Rust-only startup proceeds as follows:

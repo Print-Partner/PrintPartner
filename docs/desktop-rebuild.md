@@ -87,6 +87,28 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-desktop \
   --features desktop_rebuild -E 'test(bambu_) | test(bambu_connect::)'
 ```
 
+## Profile sync compatibility (GRE-2037)
+
+The Node-compatible desktop launcher still owns the managed profile sync
+worker and the legacy `/ws/profile-sync` stream. With a disposable Orca
+configuration root, the worker imports one synthetic process profile,
+updates the same row after a file change, and broadcasts the version on
+the stream. The row is still readable after a clean restart even with the
+input removed. Recreating the file updates that row and broadcasts again.
+
+A separate Rust-only directory with the same synthetic setup refuses the
+legacy stream and does not import the profile, including on restart.
+This is a compatibility proof, not parity for a Rust profile-sync
+replacement. No slicer is started, the input files are not modified by
+either runtime, and production remains on Node.
+
+With the measured desktop release assets built:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test profile_sync_transition
+```
+
 ## Rust-only product entry point
 
 See [Recovery transition inventory](recovery-transitions.md) for the

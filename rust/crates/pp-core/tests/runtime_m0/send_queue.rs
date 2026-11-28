@@ -31,6 +31,9 @@ const GCODE: &str = "G28\nG1 X10\n";
 #[path = "send_transition.rs"]
 mod transition;
 
+#[path = "send_import_transition.rs"]
+mod import_transition;
+
 #[tokio::test]
 async fn send_queue_rust_only_runtime_sends_once_and_never_resends_an_unknown_outcome() {
     let data = super::temporary("send-queue");

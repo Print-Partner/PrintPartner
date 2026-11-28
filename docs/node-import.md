@@ -236,6 +236,23 @@ An unmatched print Node's reader drops (not an object, or an id or filename that
 
 Each send-queue item Node's reader keeps is inserted in stored order. Its unit list is stored in `printer_send_queue.checkoff_units`. The inventory names that column, so the JSON is not an unknown document. `queued` becomes `error` with the not-started text, and `sending` becomes `error` with the interrupted text, so a copy never prints while Node is live (owner decision, 2026-11-12). Nothing inserts a `printer-upload` job. The setting is deleted after the report has counted it. `FarmTasks::read` then reads the queue through `queue_list`, which uses the table once the setting is gone. A repeated id, an id longer than 128 characters, or an `artifact_path` that sits under the installation and then climbs out refuses the import. A path under the Node folder, with no empty, `.`, `..` or drive part below it, is rewritten to the same path below the destination. A path outside the folder, and every path from an archive, is kept. The report counts rebased paths and kept paths, and does not print them.
 
+### Printer queue launcher rehearsal
+
+GRE-2019 follows a disposable schema 34 folder through the one-time import
+and three Rust launcher starts. The source database and files are unchanged,
+and the copy keeps the staged bytes under its own `exports`. No Rust upload
+job exists for either imported item. A former `sending` item still reserves
+its printer even when its Node upload job is missing. Both items stay out of
+Send ready. The user must reconcile the interrupted send with its recorded
+job ID before Send now can dispatch the formerly queued item to that printer.
+The loopback fake receives one upload-only request and no replay on restart.
+This is a disposable rehearsal, not a production switch.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(send_queue::import_transition::)'
+```
+
 ## Sources
 
 After Checkoff, the import rewrites each Source's `metadata_json` and `imported_paths`, the `source_categories` setting, each `app_events.payload_json`, and `custom_filaments.json`.

@@ -16,6 +16,9 @@ mod send_self_host_exports;
 #[path = "send_start_recovery.rs"]
 mod send_start_recovery;
 
+#[path = "send_authority.rs"]
+mod send_authority;
+
 #[tokio::test]
 async fn ticket_t_28_recovery_printer_queue_uses_one_rust_owner() {
     let data = tempfile::tempdir().unwrap();
@@ -138,6 +141,21 @@ fn item_id(item: &Value) -> &str {
     item["id"].as_str().unwrap()
 }
 
+async fn queue_runtime(data: &Path, server: bool) -> (CoreRuntime, String) {
+    let mut input = launch(data.to_owned());
+    input.bundle.node = data.join("no-node-executable");
+    let startup = if server {
+        CoreRuntime::start_for_server(input, None).await
+    } else {
+        CoreRuntime::start_for_launcher(input).await
+    };
+    let mut runtime = startup.unwrap();
+    assert!(runtime.rust_only());
+    assert!(runtime.handle().compat_status().is_none());
+    let desktop = desktop_cookie(&mut runtime).await;
+    (runtime, desktop)
+}
+
 struct Queue {
     origin: String,
     cookie: String,
@@ -145,13 +163,8 @@ struct Queue {
 
 impl Queue {
     async fn open(data: &Path, start: u32) -> (CoreRuntime, Self) {
-        let mut input = launch(data.to_owned());
-        input.bundle.node = data.join("no-node-executable");
-        let mut runtime = CoreRuntime::start_for_launcher(input).await.unwrap();
-        assert!(runtime.rust_only());
-        assert!(runtime.handle().compat_status().is_none());
+        let (runtime, desktop) = queue_runtime(data, false).await;
         let origin = runtime.origin().to_owned();
-        let desktop = desktop_cookie(&mut runtime).await;
         let cookie = signed_in(&origin, &desktop, start).await;
         (runtime, Self { origin, cookie })
     }

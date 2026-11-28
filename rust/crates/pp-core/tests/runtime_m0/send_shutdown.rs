@@ -135,7 +135,7 @@ async fn stopped(task: JoinHandle<pp_core::ShutdownReceipt>) {
     assert!(receipt.storage_released, "{receipt:?}");
 }
 
-fn job_document(data: &Path, job_id: &str) -> Value {
+pub(super) fn job_document(data: &Path, job_id: &str) -> Value {
     let db = rusqlite::Connection::open_with_flags(
         data.join("print-partner.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

@@ -552,6 +552,32 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
   --test runtime_m0 -E 'test(send_start_recovery::)'
 ```
 
+### Upload reply after the dispatch session is revoked (GRE-2033)
+
+The Rust-only server uses two sessions for the same disposable account.
+The first dispatches an upload-only item. A loopback Moonraker fake accepts
+one upload and holds its successful reply while that session signs out.
+The other session remains valid, but the worker cannot use it to confirm
+the effect. When the reply arrives, Rust fences the original attempt and
+keeps the matching printer receipt as observed evidence, not as success.
+The proof starts in server mode because desktop sign-out stops the runtime.
+
+After restart in the Rust-only desktop launcher, the original job still
+requires reconciliation. Neither Send now nor Send ready resends or
+dispatches the other waiting item.
+Reconciliation for another job ID is refused. An explicit report that the
+original job printed confirms the existing receipt and records it in the
+reconciliation history. Both records survive another restart; the fake
+receives no second upload or print-start request.
+
+The proof uses disposable data and no physical printer, and changes
+neither Node production ownership nor the rebuild gate.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(runtime_preserves_observed_upload_after_dispatch_session_is_revoked)'
+```
+
 ## Slicer gram estimate (GRE-1238)
 
 `pp_domain::slicer_grams::estimate` reads the estimate from the bytes the worker

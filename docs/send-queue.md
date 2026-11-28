@@ -174,6 +174,23 @@ item says `Interrupted by process restart before the upload began. Nothing was
 sent to the printer. Send now sends it.`, and the upload never starts on its
 own.
 
+**Rust launcher shutdown receipt (GRE-2014).** The loopback proof dispatches
+through the mounted queue. An upload acknowledged during shutdown keeps
+its receipt after restart. An upload whose body reached the fake but
+whose reply stays blocked past the drain bound keeps the admitted intent
+and recovers as unknown on the next open. The same job ID and uncertainty
+survive another open; neither the interrupted send nor an item that was
+only queued is sent automatically. The later reconcile and dispatch are
+separate, explicit actions, and the fake records no start request.
+
+This receipt covers the Rust worker's lifecycle, not the Node migration
+or production ownership switch. Run it from the repository root:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(send_shutdown::)'
+```
+
 ## User actions (GRE-365)
 
 `pp_storage::send_queue::writes` holds the queue's writes. Each request is one

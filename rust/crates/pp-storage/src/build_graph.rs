@@ -1,4 +1,5 @@
 pub mod board;
+pub mod kit_recipe;
 pub mod manifest_options;
 mod model;
 pub mod wire;

@@ -1048,7 +1048,7 @@ fn patch(tx: &Transaction<'_>, tenant: &str, id: i64, p: SourcePatch) -> Result<
     tx.execute("UPDATE projects SET name=?1,url=?2,branch=?3,tag=?4,source_kind=?5,source_type=?6,role=?7,metadata_json=?8 WHERE tenant_id=?9 AND id=?10",params![row.name,row.url,row.branch,row.tag,row.source_kind,row.source_type,row.role,if metadata_changed {row.metadata.map(|m|json::metadata(&m)).transpose()?}else{original_metadata},tenant,id])?;
     require(tx, tenant, id)
 }
-fn rules(raw: Option<String>) -> (Vec<String>, bool) {
+pub(crate) fn rules(raw: Option<String>) -> (Vec<String>, bool) {
     let Some(raw) = raw else {
         return (vec![], true);
     };

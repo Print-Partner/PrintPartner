@@ -56,8 +56,10 @@ data, and does not publish a file.
 
 The golden replays both modes against Node: the only archive member is
 `kit.json`, and its uncompressed bytes match for the same export timestamp.
-The outer ZIP bytes can differ. Production still uses Node for both aliases;
-Rust Plan capture, job publication, and runtime routing are separate slices.
+The outer ZIP bytes can differ. The Rust core can project a saved editable Plan
+capture into this encoder (GRE-2041). Production still uses Node for both
+aliases; accepted progress capture, job publication, and routing are separate
+slices.
 
 ## Tests
 

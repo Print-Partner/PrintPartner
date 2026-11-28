@@ -529,6 +529,29 @@ Status checks before Send now never trim the queue's terminal history. A
 host that is not Moonraker or PrusaLink fails with "Upload is not supported
 for <type>".
 
+### Lost printer start reply (GRE-2028)
+
+The Rust-only launcher rehearsal stages two disposable files for a loopback
+Moonraker fake. Staging sends nothing. Only Send now makes the fake receive
+one upload, accept it, and receive one start for that filename. The fake
+accepts the start but closes the connection without replying.
+
+The original job keeps its admitted upload-and-start intent and staged bytes
+and awaits reconciliation. Across restart, neither Send ready nor Send now
+repeats the request or sends the other item to that printer. Reconciliation
+with a different job ID is refused. Recording that the original job printed
+closes the queue item without turning the user's report into a printer
+receipt; both records survive another restart. Only a new Send now sends the
+waiting item, and it uploads without starting a print.
+
+This test makes no physical printer request and does not change the rebuild
+gate or Node's production ownership.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(send_start_recovery::)'
+```
+
 ## Slicer gram estimate (GRE-1238)
 
 `pp_domain::slicer_grams::estimate` reads the estimate from the bytes the worker

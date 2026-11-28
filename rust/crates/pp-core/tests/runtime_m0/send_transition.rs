@@ -13,6 +13,9 @@ mod send_shutdown;
 #[path = "send_self_host_exports.rs"]
 mod send_self_host_exports;
 
+#[path = "send_start_recovery.rs"]
+mod send_start_recovery;
+
 #[tokio::test]
 async fn ticket_t_28_recovery_printer_queue_uses_one_rust_owner() {
     let data = tempfile::tempdir().unwrap();

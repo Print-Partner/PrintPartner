@@ -136,6 +136,31 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
   and provider proofs when implemented. Do not count an absent endpoint or a
   generic job policy as evidence of a supported Rust integration.
 
+### Kit bundle compatibility (GRE-2031)
+
+With the rebuild gate off, the desktop launcher routes both
+`POST /jobs/export-kit-bundle` and `POST /api/v1/jobs/export-kit-bundle`
+to Node. The proof creates a disposable Plan, sends an editable request
+through one alias and a request for accepted progress through the other,
+and follows each distinct job to completion. The Node worker publishes a
+downloadable `.print-partner-kit.zip` containing only `kit.json`. The
+download matches the published bytes. Restart leaves the files downloadable
+and does not rerun the old in-memory jobs. The Plan has no accepted
+revision; this does not prove parity for exporting accepted progress.
+
+In a separate Rust-owned directory, the launcher runs with the rebuild
+gate on and no Node executable. Both aliases refuse both request forms
+for an existing Plan. No Rust job or export file appears before or
+after restart. This is a compatibility boundary proof, not a Rust kit
+bundle replacement, an import test, or a production ownership switch.
+
+Run the launcher proof against the built desktop release assets:
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(kit_bundle_aliases_and_worker_remain_with_node)'
+```
+
 ## Manual Source Sync receipt
 
 The runtime proof starts the actual Rust-only launcher twice with the same

@@ -2,6 +2,8 @@
 
 #[path = "../../pp-api/tests/support/accepted_plate.rs"]
 mod accepted_plate;
+#[path = "support/desktop_http.rs"]
+mod desktop_http;
 #[path = "support/release.rs"]
 mod release;
 
@@ -166,20 +168,7 @@ impl Api {
         .expect("start on disposable Accepted Plan data without Node");
         assert!(runtime.rust_only());
         assert!(runtime.handle().compat_status().is_none());
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(WAIT)
-            .build()
-            .unwrap();
-        let bootstrap = client
-            .get(runtime.take_launch_target().unwrap().into_url())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(bootstrap.status(), StatusCode::SEE_OTHER);
-        let desktop_cookie =
-            pp_testkit::session_cookie(bootstrap.headers()[header::SET_COOKIE].to_str().unwrap());
+        let (client, desktop_cookie) = desktop_http::connect(&mut runtime, WAIT).await;
         let api = Self {
             origin: runtime.origin().to_owned(),
             client,

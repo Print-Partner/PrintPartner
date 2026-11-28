@@ -216,7 +216,7 @@ enum Gate {
     Off,
     On {
         origin: AllowedOrigin,
-        handle: pp_core::CoreHandle,
+        handle: Box<pp_core::CoreHandle>,
     },
 }
 
@@ -248,7 +248,10 @@ impl OriginBridge {
             change.is_some(),
         ));
         Self {
-            gate: Gate::On { origin, handle },
+            gate: Gate::On {
+                origin,
+                handle: Box::new(handle),
+            },
             notice: user_notice(true, change),
             script,
         }
@@ -279,7 +282,7 @@ impl OriginBridge {
             return Err(UNAVAILABLE);
         };
         authorize(origin, window, webview, url)?;
-        Ok(handle.clone())
+        Ok(pp_core::CoreHandle::clone(handle))
     }
 }
 

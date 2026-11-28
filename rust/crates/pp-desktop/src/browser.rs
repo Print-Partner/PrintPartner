@@ -67,7 +67,8 @@ mod tests {
 
     #[test]
     fn ticket_t_19_tray_offers_open_in_browser() {
-        assert_eq!(crate::tray::menu_ids().get(1), Some(&"browser"));
+        let ids = crate::tray::menu_ids(Default::default());
+        assert_eq!(ids.get(1), Some(&"browser"));
     }
 
     #[test]

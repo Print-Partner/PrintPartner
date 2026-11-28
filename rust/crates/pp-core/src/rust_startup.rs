@@ -15,8 +15,11 @@ use pp_gateway::ownership::cutover::{self, OperationOwners};
 use pp_storage::WriterOwner;
 use std::path::{Path, PathBuf};
 
+mod backup_source;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use backup_source::backup_source;
 
 /// An accepted directory after every startup step ran.
 pub(crate) struct Admitted<V> {

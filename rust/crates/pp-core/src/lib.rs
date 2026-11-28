@@ -19,6 +19,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+mod backup;
 mod desktop_settings;
 mod drain;
 #[cfg(feature = "desktop_rebuild")]
@@ -32,6 +33,7 @@ mod rebuild;
 mod rust_startup;
 mod state_file;
 
+pub use backup::{BackupFailure, OfflineBackup};
 pub use desktop_settings::{DesktopSetting, DesktopSettings};
 pub use origin::OriginChange;
 use origin::bind_origin;
@@ -168,6 +170,7 @@ pub struct CoreHandle {
     bootstrap: pp_gateway::BootstrapMinter,
     gate: ShutdownGate,
     preferences: preferences::Client,
+    backup: Option<Arc<dyn backup::Export>>,
 }
 impl Clone for CoreHandle {
     fn clone(&self) -> Self {
@@ -178,6 +181,7 @@ impl Clone for CoreHandle {
             bootstrap: self.bootstrap.clone(),
             gate: self.gate.clone(),
             preferences: self.preferences.clone(),
+            backup: self.backup.clone(),
         }
     }
 }
@@ -239,6 +243,12 @@ impl CoreHandle {
     pub fn track_shutdown_work(&self) -> Result<TrackedShutdownWork, &'static str> {
         self.gate.track()
     }
+
+    /// The tray's Back up now: `None` unless the Rust writer owns the data.
+    pub fn offline_backup(&self) -> Option<OfflineBackup> {
+        let export = self.backup.clone()?;
+        Some(OfflineBackup::new(export, self.gate.clone()))
+    }
 }
 
 pub struct CoreRuntime {
@@ -265,6 +275,7 @@ struct Resources {
     compat: CompatHandle,
     backend: Backend,
     gate: ShutdownGate,
+    backup: Option<Arc<dyn backup::Export>>,
 }
 
 /// Who owns the data directory's operations for this run.
@@ -509,6 +520,7 @@ async fn start_resources(
         compat,
         backend: Backend::Node { supervisor, owner },
         gate: ShutdownGate::new(),
+        backup: None,
     })
 }
 
@@ -621,6 +633,7 @@ async fn start_rust_resources(
         github::GithubTransport::new()?,
     )?;
     let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
+    let backup = rust_startup::backup_source(&writer)?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let (imports, uploads) = start_imports(&writer, &origin).await?;
     // MCP is composed before the gateway starts the watchers; it reads them
@@ -689,6 +702,7 @@ async fn start_rust_resources(
             imports,
         },
         gate: ShutdownGate::new(),
+        backup: Some(backup),
     })
 }
 
@@ -842,6 +856,7 @@ impl CoreRuntime {
                                 bootstrap: resources.gateway.bootstrap_minter(),
                                 gate: resources.gate.clone(),
                                 preferences,
+                                backup: resources.backup.clone(),
                             },
                             launch,
                             requested_by_adapter,

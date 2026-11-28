@@ -254,15 +254,17 @@ fn ticket_t_31_open_at_login_toggle_reports_a_failure() {
 
 #[test]
 fn ticket_t_31_open_at_login_sits_before_quit_on_macos_only() {
-    use pp_desktop::tray::{OPEN_AT_LOGIN, menu_ids, menu_ids_with_open_at_login};
-    let ids = menu_ids_with_open_at_login();
-    assert_eq!(ids.len(), menu_ids().len() + 1);
+    use pp_desktop::tray::{MenuExtras, OPEN_AT_LOGIN, menu_ids};
+    let (defaults, mut extras) = (menu_ids(MenuExtras::default()), MenuExtras::default());
+    extras.open_at_login = true;
+    let ids = menu_ids(extras);
+    assert_eq!(ids.len(), defaults.len() + 1);
     assert_eq!(&ids[ids.len() - 2..], [OPEN_AT_LOGIN, "quit"]);
     let without: Vec<_> = ids
         .iter()
         .copied()
         .filter(|id| *id != OPEN_AT_LOGIN)
         .collect();
-    assert_eq!(without, menu_ids(), "the default order is unchanged");
-    assert!(!menu_ids().contains(&OPEN_AT_LOGIN));
+    assert_eq!(without, defaults, "the default order is unchanged");
+    assert!(!defaults.contains(&OPEN_AT_LOGIN));
 }

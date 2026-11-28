@@ -9,7 +9,8 @@ macOS ships first. Windows and Linux ship before 1.0. CI will build and test the
 ## Behavior today
 
 - Closing the window hides it to the tray. The core keeps running.
-- The tray has Show, the service status, Restart service and Quit.
+- The tray has Show Print Partner, Open in browser, the service status, View logs, Reveal log folder, Restart service, Open data folder and Quit. On macOS, Open at login sits just before Quit.
+- In the Rust-only runtime (a `desktop_rebuild` build with `PP_DESKTOP_REBUILD` set to `1` or `true`), the tray also has **Back up now** after Open data folder. It makes a full backup with the native archive writer and saves it in your Downloads folder as `print-partner-backup.tar.gz`, or `print-partner-backup (1).tar.gz` and so on when that name is taken. It never replaces a file. While it runs, the item reads *Backing up…* and is disabled. A dialog then shows the saved path, or "Backup failed" with a fixed reason. Without a Downloads folder it reports a failure. Quit chosen during a backup does not quit: it asks you to choose Quit again after the backup finishes. The Node-backed runtime has no Back up now item. See [Tray backup](storage.md#tray-backup).
 - Quit waits for the core to shut down before the process exits.
 - The default data directory is `~/.print-partner`. See [Storage](storage.md).
 - The web view gets no native commands. Navigation stays on the core's loopback origin, and popups are denied.

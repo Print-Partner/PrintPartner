@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
         with:
           manifest-path: rust/Cargo.toml
           command: check
@@ -35,7 +35,7 @@ jobs:
       # Full check on purpose (GRE-999): advisories ran before; bans, licenses
       # and sources now run too, like the workspace step above. rust/deny.toml
       # scopes libfuzzer-sys's NCSA to libfuzzer-sys@0.4.10 only.
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
         with:
           manifest-path: rust/fuzz/Cargo.toml
           command: check

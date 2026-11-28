@@ -2,6 +2,8 @@
 
 #[path = "../../pp-api/tests/support/accepted_plate.rs"]
 mod accepted_plate;
+#[path = "on_demand_exports_transition/editable_kit_recipe.rs"]
+mod editable_kit_recipe;
 #[path = "support/release.rs"]
 mod release;
 

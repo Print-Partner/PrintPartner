@@ -98,3 +98,21 @@ Cargo features:
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-storage
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild
 ```
+
+## Editable kit recipe (GRE-2041)
+
+With `desktop_rebuild`, `ReadClient::editable_kit_recipe` captures the saved
+Plan header, layers, parts and typed kit manifest in the same read transaction
+as the credential check. Sources are tenant-scoped and deduplicated in layer
+order. References carry portable URLs and import rules, not local Source
+locations or model bytes. This does not read open draft edits, accepted
+progress, or Checkoff history, and does not create a job or an archive.
+`pp-core::production::kit_recipe` projects the captured fields into the existing
+editable bundle encoder. The capture preserves non-scalar UTF-16 manifest
+text; the current encoder refuses it rather than changing the text.
+Nothing calls this read from a runtime route yet; the runtime switch remains
+off by default and production exports still run in Node.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --test on_demand_exports_transition -E 'test(captures_only_saved_owned_recipe)'
+```

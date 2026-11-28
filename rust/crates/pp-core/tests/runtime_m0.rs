@@ -46,6 +46,10 @@ mod source_sync_transition;
 mod plate_export_transition;
 
 #[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/kit_bundle_transition.rs"]
+mod kit_bundle_transition;
+
+#[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/printer_stream.rs"]
 mod printer_stream;
 

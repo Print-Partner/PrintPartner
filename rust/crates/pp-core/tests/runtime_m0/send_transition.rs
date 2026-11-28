@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::Path, time::Duration};
 use tokio::time::timeout;
 
+#[path = "send_shutdown.rs"]
+mod send_shutdown;
+
 #[tokio::test]
 async fn ticket_t_28_recovery_printer_queue_uses_one_rust_owner() {
     let data = tempfile::tempdir().unwrap();

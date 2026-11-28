@@ -79,6 +79,33 @@ transition evidence, including the wider startup, shutdown and
 compatibility decision for the old aliases. This fixture does not
 rehearse the data import or grant approval to switch production.
 
+### Legacy self-host export paths
+
+The Node self-host startup migration moves eligible flat exports into
+`exports/tenant-default` but leaves both copies when a destination already
+exists. The one-time Rust import keeps the flat and tenant-relative paths
+as stored on disk. It rebases each queue row to the same relative path in
+the Rust copy; Rust startup does not rerun the Node migration or replace one
+file with another that has the same name.
+
+The GRE-2022 launcher test gives flat and tenant-scoped copies of the same
+filename different bytes. Each explicit Send now uploads the exact bytes
+selected by its row, without starting a print. A missing flat path is
+refused even when the corresponding tenant file exists. No uploads run on
+import or restart. Successful cleanup removes only the two dispatched
+staging directories from the Rust copy. The unrelated flat and tenant
+files and the original Node installation are unchanged. This uses
+synthetic schema 34 data and a loopback PrusaLink fake; it does not change
+the production startup path or claim parity for the Node startup migration.
+
+Only the importer reads the stopped Node installation; the Rust launcher
+opens the separate copy.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(send_self_host_exports::)'
+```
+
 ## Schema 44
 
 The 43 to 44 step installs the table and its index from

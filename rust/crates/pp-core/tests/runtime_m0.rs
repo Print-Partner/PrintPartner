@@ -62,6 +62,10 @@ mod printer_host;
 mod bambu_pin;
 
 #[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/bambu_handoff_transition.rs"]
+mod bambu_handoff_transition;
+
+#[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/integration_setup.rs"]
 mod integration_setup;
 

@@ -56,6 +56,7 @@ struct FaultLoop {
     calls: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
     phase: Arc<AtomicU8>,
+    answer_read_probes: bool,
 }
 
 impl FaultLoop {
@@ -71,6 +72,12 @@ impl FaultLoop {
                     };
                     if self.stopped.load(Ordering::SeqCst) {
                         break;
+                    }
+                    if self.answer_read_probes && request.line.starts_with("GET ") {
+                        let _ = socket.write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                        );
+                        continue;
                     }
                     self.calls.fetch_add(1, Ordering::SeqCst);
                     if self.requests.send(request).is_err() {
@@ -201,6 +208,15 @@ impl FaultLoop {
 
 impl FaultPrinter {
     pub fn start() -> io::Result<Self> {
+        Self::start_inner(false)
+    }
+
+    /// Answer watcher GETs without gating or counting them as printer effects.
+    pub fn start_with_read_probes() -> io::Result<Self> {
+        Self::start_inner(true)
+    }
+
+    fn start_inner(answer_read_probes: bool) -> io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -222,6 +238,7 @@ impl FaultPrinter {
             calls: received.clone(),
             stopped: stopped.clone(),
             phase,
+            answer_read_probes,
         };
         let thread = thread::spawn(move || server.run());
         Ok(Self {

@@ -51,6 +51,16 @@ staged files unused for 24 hours and refuses a new file if 16 are still
 retained. The Rust route does not stage for Docker or LAN clients. The
 replacement Production screen does not expose this route yet.
 
+The Rust launcher proof (GRE-2018) stages a synthetic file through
+`POST /api/v2/plans/{id}/bambu-connect-handoff`. It checks that the returned
+link names a private staged file eligible for the native command, that
+staging the same bytes after restart reuses the file, and that a conflict
+leaves the existing bytes intact. Headless Rust does not mount that POST.
+Neither Rust runtime serves the legacy stage and download routes at
+`/bambu-connect/handoff` and `/bambu-connect/handoff/{id}/file`, including
+their `/api/v1` aliases. The proof opens neither Connect nor a printer and
+finds no job or published export. Legacy production ownership stays on Node.
+
 ## Create and link a Printer
 
 1. Open **Printers** from the main navigation.

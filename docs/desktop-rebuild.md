@@ -60,6 +60,33 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --no-defaul
 
 Core tests isolate environment changes in child processes. They cover absent, disabled, invalid, and enabled values with and without the Cargo feature. The existing autosave consumer tests run in both contract builds. The Rust runtime proof checks the existing authenticated endpoints, source creation, response shapes, and shutdown with the runtime opt-in absent or false.
 
+## Bambu Connect native handoff rehearsal
+
+The staging request writes a print file for a later user action. It does
+not open Bambu Connect. The Rust desktop launcher adds the native command
+capability only when the rebuild is enabled. The capability is bound to
+the main webview and its startup loopback origin; the command also checks
+the enclosing window and the webview's current URL.
+
+GRE-2026 checks the real Tauri capability against the generated desktop
+context, then exercises the native command's handoff with a disposable
+file and fake opener. The fake receives exactly one canonical
+`bambu-connect://import-file` URL for a valid invocation and none for an
+untrusted caller or unavailable staging file. A staging path outside the
+owned directory, a hard link, or (on Unix) a symlink is refused. A new
+desktop origin refuses calls from the old origin.
+
+An opener error is returned to the caller without retrying or consuming
+the staged file. A new explicit invocation can try again. A successful
+opener call does not confirm that Bambu Connect loaded the file, started
+a print, or contacted a printer. This rehearsal does not start a WebView,
+invoke an OS handler, or change Node's production ownership.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-desktop \
+  --features desktop_rebuild -E 'test(bambu_) | test(bambu_connect::)'
+```
+
 ## Rust-only product entry point
 
 See [Recovery transition inventory](recovery-transitions.md) for the

@@ -1,5 +1,6 @@
 use crate::AllowedOrigin;
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -9,6 +10,7 @@ use tokio::process::Command;
 const IMPORT_URL: &str = "bambu-connect://import-file";
 const DENIED: &str =
     "This file is not available for Bambu Connect. Stage it again from Production.";
+const OPEN_FAILED: &str = "Could not open Bambu Connect. Check that it is installed.";
 
 pub struct BambuConnect {
     origin: AllowedOrigin,
@@ -56,6 +58,18 @@ impl BambuConnect {
             pp_core::rebuild_api::is_bambu_connect_staged_file(&self.data, path)
         })
     }
+
+    async fn handoff<O: Future<Output = Result<(), &'static str>>>(
+        &self,
+        window: &str,
+        webview: &str,
+        current: &Url,
+        raw: &str,
+        open: impl FnOnce(Url) -> O,
+    ) -> Result<(), &'static str> {
+        let url = self.admit(window, webview, current, raw)?;
+        open(url).await.map_err(|_| OPEN_FAILED)
+    }
 }
 
 fn admitted_url(raw: &str, staged: impl FnOnce(&Path) -> bool) -> Result<Url, &'static str> {
@@ -98,15 +112,27 @@ pub async fn open_bambu_connect(
     url: String,
 ) -> Result<(), String> {
     let current = webview.url().map_err(|_| DENIED.to_owned())?;
-    let url = action
-        .admit(webview.window().label(), webview.label(), &current, &url)
-        .map_err(str::to_owned)?;
+    action
+        .handoff(
+            webview.window().label(),
+            webview.label(),
+            &current,
+            &url,
+            open_import_url,
+        )
+        .await
+        .map_err(str::to_owned)
+}
+
+async fn open_import_url(url: Url) -> Result<(), &'static str> {
     let mut command = Command::from(crate::platform::opener());
     command.arg(url.as_str());
-    crate::native_actions::run_browser(command, Duration::from_secs(5))
-        .await
-        .map_err(|_| "Could not open Bambu Connect. Check that it is installed.".into())
+    crate::native_actions::run_browser(command, Duration::from_secs(5)).await
 }
+
+#[cfg(test)]
+#[path = "bambu_connect/tests/proof.rs"]
+pub(crate) mod proof;
 
 #[cfg(test)]
 mod tests {

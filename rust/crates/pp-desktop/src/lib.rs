@@ -841,6 +841,12 @@ mod tests {
         crate::native_actions::verify_authority(context);
     }
 
+    #[cfg(feature = "desktop_rebuild")]
+    #[test]
+    fn bambu_native_capability_is_absent_until_added_to_the_bound_webview() {
+        crate::bambu_connect::proof::verify_authority(&mut generated_context());
+    }
+
     #[test]
     fn resource_paths_must_remain_inside_the_package() {
         let scratch = crate::scratch::Scratch::new("pp-layout-");

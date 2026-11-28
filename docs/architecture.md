@@ -98,7 +98,9 @@ compatibility routing, the parity fixtures and the Node 22 schema oracle, and
 the operation inventory in report mode. Deferred until after cutover: the
 Windows follow-ups, Home Assistant and webhooks, profile sync, the
 reference-sharing routes, 3MF and kit-bundle exports, farm reflow, queue move,
-and Bambu beyond status-only. Pulled forward: the Rust-only Docker image,
+and Bambu beyond status-only. The owner subsequently pulled kit-bundle export
+back into the pre-cutover build (GRE-2035). Pulled forward in the November 8
+plan: the Rust-only Docker image,
 unsigned Mac and Linux try-it builds on copied data, and a measured
 Node-versus-Rust baseline of the four operations the owner named as slow:
 thumbnail load, a Plan change, a Checkoff session, and an STL pack or HTML

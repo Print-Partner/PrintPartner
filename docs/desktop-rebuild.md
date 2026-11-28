@@ -2045,3 +2045,26 @@ See [Filament grams per send (GRE-1165, part a: GRE-1237)](records/filament-gram
 - **Folders.** Every pack uses `<role>/<folder>/`. Node's colour-only folders, filename grouping and single-unit selection are not ported (GRE-393).
 - **Stored entries.** Every entry is stored uncompressed, so each is byte-identical to its Source file and the archive size is known before it is written.
 
+### Checklist and STL launcher receipt (GRE-2012)
+
+The Rust-only launcher serves `GET /api/v2/plans/{id}/exports/checklist`
+and `GET /api/v2/plans/{id}/exports/stl-pack` from the same Accepted Plan.
+The checklist reflects Checkoff counts. The pack's `scope=remaining`
+selects unprinted units; the default scope includes printed units as well.
+The launcher proof marks the fixture's Required unit printed through
+Checkoff and verifies both responses before and after restart. If the
+Source bytes change, the pack refuses the whole download without an
+attachment; the checklist can still report the accepted unit's count.
+
+The legacy POSTs `/jobs/export-checklist-html` and `/jobs/export-stl-pack`
+and their `/api/v1` aliases are not admitted on the Rust launcher. They
+create neither a durable job nor an export file and do not fall back to
+Node. The Rust downloads run on demand: no replacement job worker starts,
+and restart does not replay the download. The test uses a disposable
+fixture and a nonexistent Node executable. Production and both legacy
+workers stay on Node pending the whole-runtime switch.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test on_demand_exports_transition
+```

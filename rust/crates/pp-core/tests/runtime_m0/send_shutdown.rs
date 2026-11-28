@@ -24,6 +24,9 @@ use tokio::{
 const PRINTER: &str = "p-shutdown";
 const DEADLINE: Duration = Duration::from_secs(15);
 
+#[path = "send_before_effect.rs"]
+mod send_before_effect;
+
 #[tokio::test]
 async fn ticket_t_28_recovery_launcher_shutdown_does_not_replay_an_admitted_upload() {
     let data = tempfile::tempdir().unwrap();

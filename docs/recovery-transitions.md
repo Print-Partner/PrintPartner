@@ -54,6 +54,34 @@ startup and shutdown participants. In particular, the two direct
 Future transition checks must retain the durable unknown result and never
 repeat a physical send to prove equivalence.
 
+**Restart before effect admission (GRE-2023).** Stage two files through the
+Rust launcher, then use the storage writer to leave one upload job queued
+and the other leased with no effect receipt. Startup marks both jobs and
+queue entries as not started. It keeps their original job IDs and staged
+bytes, rejects reconciliation because the outcomes are known, and makes
+no upload. The queue entries explain that nothing reached the printer;
+the job reads return terminal failures with no upload result.
+
+Send ready skips both recovered entries. This exercise starts with
+Rust-owned data; it is not an import or a Node compatibility rehearsal.
+
+Only a later Send now creates a fresh job. Each explicit retry makes one
+upload-only request to the loopback fake. The original failure receipts
+stay readable after both retries and restart. The test deliberately stops at
+the durable handoff before the send worker admits an effect. It complements
+the [shutdown test](send-queue.md), where the effect has already reached the
+fake and the outcome can be unknown.
+
+The rehearsal leaves the old attempts in storage. The queue points to a
+new job only once the user sends again, so a successful retry does not
+rewrite the history of the interrupted attempt. This does not exercise
+revocation of the original session's authority.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core \
+  --test runtime_m0 -E 'test(send_before_effect::)'
+```
+
 ### Spoolman deduction
 
 Spoolman is not a generic `JobKind`. The Rust owner writes a deduction when a

@@ -13,6 +13,8 @@ use pp_testkit::moonraker::RecordedPrinter;
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 
+const RECORDED_PROGRESS_PERCENT: u32 = 43;
+
 const ROUTES: [&str; 5] = [
     "/api/v2/printers",
     "/api/v2/printer-checkoff",
@@ -81,11 +83,13 @@ fn seed_farm(data: &Path, url: &str) {
                     {"id": "p-none", "name": "Annex K3"}
                 ]),
             ),
+            // Match the repeated Moonraker report so the watcher has no progress to write.
             (
                 "printer.checkoff_links",
                 json!([{"id": "link-1", "profile_id": 1, "printer_id": "p-moon",
                     "integration_id": "moon-1", "filename": "bracket.gcode",
                     "state": "watching", "units": [], "saw_active": true,
+                    "last_progress": RECORDED_PROGRESS_PERCENT,
                     "created_at": "2026-11-05T00:00:00.000Z"}]),
             ),
             (
@@ -224,7 +228,7 @@ fn check_printers(printers: &Value) {
     );
     let moon = &printers["printers"][0];
     assert_eq!(moon["state"]["bed_clear"], "needs_clearing");
-    assert_eq!(moon["progress_percent"], 43);
+    assert_eq!(moon["progress_percent"], RECORDED_PROGRESS_PERCENT);
     assert_eq!(
         moon["integration"],
         json!({"id": "moon-1", "kind": "moonraker"})
@@ -279,7 +283,11 @@ async fn farm_reads_rust_only_runtime_in_child() {
     let moon = &status["printers"][0];
     assert_eq!(
         (&moon["id"], &moon["state"], &moon["progress"]),
-        (&json!("p-moon"), &json!("printing"), &json!(43)),
+        (
+            &json!("p-moon"),
+            &json!("printing"),
+            &json!(RECORDED_PROGRESS_PERCENT)
+        ),
         "{status}"
     );
     assert_eq!(

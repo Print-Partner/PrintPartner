@@ -5,9 +5,8 @@
 //! references, in [`source_refs`]). `fixtures/parity/kit-bundle` holds the
 //! Node golden that `tests/kit_bundle_golden.rs` replays.
 //!
-//! Not here yet: the accepted-progress bundle mode, which reads the accepted
-//! operational export (GRE-422), and publishing the zip under the exports
-//! directory.
+//! Callers capture the editable recipe and any accepted progress. This
+//! module does not read Plan storage or publish files.
 
 mod js;
 pub mod source_refs;
@@ -200,13 +199,55 @@ pub struct EditableKitRecipe {
 
 /// `buildKitBundleData` in editable mode.
 pub fn build_editable_kit_bundle(recipe: &EditableKitRecipe, exported_at: &str) -> Value {
+    bundle_data(
+        recipe,
+        exported_at,
+        recipe.working_parts.iter().map(KitBundlePart::to_json),
+    )
+}
+
+/// A part from the accepted basis, with Checkoff state in Required-unit order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcceptedKitBundlePart {
+    pub part: KitBundlePart,
+    pub print_units: Vec<bool>,
+}
+
+impl AcceptedKitBundlePart {
+    fn to_json(&self) -> Value {
+        let mut data = self.part.to_json();
+        data["print_units"] = json!(self.print_units);
+        data
+    }
+}
+
+/// Combine editable recipe metadata with accepted parts and their progress.
+/// Pass an empty slice if the Plan has no accepted basis. Working parts are
+/// never substituted in this mode.
+pub fn build_accepted_kit_bundle(
+    recipe: &EditableKitRecipe,
+    accepted_parts: &[AcceptedKitBundlePart],
+    exported_at: &str,
+) -> Value {
+    bundle_data(
+        recipe,
+        exported_at,
+        accepted_parts.iter().map(AcceptedKitBundlePart::to_json),
+    )
+}
+
+fn bundle_data(
+    recipe: &EditableKitRecipe,
+    exported_at: &str,
+    parts: impl Iterator<Item = Value>,
+) -> Value {
     json!({
         "format": KIT_FORMAT,
         "version": KIT_VERSION,
         "exported_at": exported_at,
         "profile": { "name": recipe.profile_name, "order_number": recipe.order_number },
         "layers": recipe.layers,
-        "parts": recipe.working_parts.iter().map(KitBundlePart::to_json).collect::<Vec<_>>(),
+        "parts": parts.collect::<Vec<_>>(),
         "kit_manifest": recipe.kit_manifest,
         "sources": recipe.sources,
     })

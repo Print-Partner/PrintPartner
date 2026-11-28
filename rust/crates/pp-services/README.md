@@ -29,7 +29,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `native_slicers` | `NativeRoots`, `discover_native_kind`, `discover_macos`. Off macOS, `discover_native_kind` returns `Unsupported`; `NativeRoots::for_home` exists only on macOS. |
 | `profile_sync` | `parse_slicer_json`, `parse_slicer_ini`, `parse_profile_file`, `resolve_inherited`, `read_profile`, `scan_root`, `locate`, `WatchRoot`, `FlatConfig`. Matches Node's JS number and property-order output. |
 | `mcp_domain` | `McpSession<P: DomainPort>` (`list_tools`, `call_tool`, `list_prompts`, `get_prompt`, `pending_ids`), `DomainPort`, `UnportedDomain`, `server_info`, `list_custom_filaments`. The catalog is `src/mcp_domain/catalog.json`. |
-| `kit` (`desktop_rebuild`) | `parse_kit_bundle`, `build_editable_kit_bundle`, `kit_json_text`, `kit_bundle_zip`, `source_refs::collect_kit_bundle_source_refs`. |
+| `kit` (`desktop_rebuild`) | `parse_kit_bundle`, `build_editable_kit_bundle`, `build_accepted_kit_bundle`, `kit_json_text`, `kit_bundle_zip`, `source_refs::collect_kit_bundle_source_refs`. |
 
 `pp-api` uses `mcp_domain` behind its own `desktop_rebuild` feature. No binaries.
 
@@ -42,7 +42,22 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 Cargo features:
 
-- `desktop_rebuild` (default off): compiles `kit` and adds `zip`, `ryu-js` and `crc32fast`.
+- `desktop_rebuild`: compiles `kit`. The default-off runtime switch
+  `PP_DESKTOP_REBUILD` is checked by runtime callers, not by format helpers.
+
+### Kit-bundle export (GRE-2035)
+
+Editable exports use working parts and omit Checkoff progress. Accepted-progress
+exports keep recipe metadata but use parts from the accepted basis, with
+`print_units` booleans in Required-unit order. A Plan with no accepted basis
+has an empty parts list in this mode; it does not fall back to working parts.
+The format layer takes captured inputs, does not read either runtime's stored
+data, and does not publish a file.
+
+The golden replays both modes against Node: the only archive member is
+`kit.json`, and its uncompressed bytes match for the same export timestamp.
+The outer ZIP bytes can differ. Production still uses Node for both aliases;
+Rust Plan capture, job publication, and runtime routing are separate slices.
 
 ## Tests
 

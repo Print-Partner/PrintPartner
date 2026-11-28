@@ -4,14 +4,15 @@
 //! `node fixtures/parity/kit-bundle/generate.mjs`.
 
 mod ticket_t_58_kit {
-    use std::io::{Cursor, Write};
+    use std::io::{Cursor, Read, Write};
 
     use pp_services::kit::source_refs::{
         KitSourceProject, KitSourceRef, collect_kit_bundle_source_refs,
     };
     use pp_services::kit::{
-        EditableKitRecipe, KitBundleError, KitBundlePart, MAX_KIT_JSON_BYTES,
-        build_editable_kit_bundle, kit_bundle_zip, kit_json_text, parse_kit_bundle, stringify,
+        AcceptedKitBundlePart, EditableKitRecipe, KIT_JSON_NAME, KitBundleError, KitBundlePart,
+        MAX_KIT_JSON_BYTES, build_accepted_kit_bundle, build_editable_kit_bundle, kit_bundle_zip,
+        kit_json_text, parse_kit_bundle, stringify,
     };
     use serde_json::{Map, Value, json};
     use sha2::{Digest, Sha256};
@@ -245,31 +246,36 @@ mod ticket_t_58_kit {
         }
     }
 
+    fn bundle_part(part: &Value, key: &str) -> KitBundlePart {
+        let text = |value: &Value| value.as_str().map(str::to_owned);
+        KitBundlePart {
+            match_key: key.to_owned(),
+            relative_path: text(&part["relativePath"]).unwrap(),
+            filename: text(&part["filename"]).unwrap(),
+            source_layer: text(&part["sourceLayer"]).unwrap(),
+            status: text(&part["status"]).unwrap(),
+            role: text(&part["role"]).unwrap(),
+            filament_color_id: text(&part["filamentColorId"]),
+            filament_custom_hex: text(&part["filamentCustomHex"]),
+            quantity_inferred: part["quantityInferred"].as_i64().unwrap(),
+            quantity_override: part["quantityOverride"].as_i64(),
+            quantity_effective: part["quantityEffective"].as_i64().unwrap(),
+            included: part["included"].as_bool().unwrap(),
+            notes: text(&part["notes"]).unwrap(),
+            geometry_same: part["geometrySame"].as_bool(),
+            requirement: text(&part["requirement"]),
+            option_group_id: text(&part["optionGroupId"]),
+            manifest_source: text(&part["manifestSource"]),
+        }
+    }
+
     fn recipe(raw: &Value) -> EditableKitRecipe {
         let text = |value: &Value| value.as_str().map(str::to_owned);
         let parts = raw["workingParts"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|part| KitBundlePart {
-                match_key: text(&part["matchKey"]).unwrap(),
-                relative_path: text(&part["relativePath"]).unwrap(),
-                filename: text(&part["filename"]).unwrap(),
-                source_layer: text(&part["sourceLayer"]).unwrap(),
-                status: text(&part["status"]).unwrap(),
-                role: text(&part["role"]).unwrap(),
-                filament_color_id: text(&part["filamentColorId"]),
-                filament_custom_hex: text(&part["filamentCustomHex"]),
-                quantity_inferred: part["quantityInferred"].as_i64().unwrap(),
-                quantity_override: part["quantityOverride"].as_i64(),
-                quantity_effective: part["quantityEffective"].as_i64().unwrap(),
-                included: part["included"].as_bool().unwrap(),
-                notes: text(&part["notes"]).unwrap(),
-                geometry_same: part["geometrySame"].as_bool(),
-                requirement: text(&part["requirement"]),
-                option_group_id: text(&part["optionGroupId"]),
-                manifest_source: text(&part["manifestSource"]),
-            });
+            .map(|part| bundle_part(part, part["matchKey"].as_str().unwrap()));
         EditableKitRecipe {
             profile_name: text(&raw["profile"]["name"]).unwrap(),
             order_number: text(&raw["profile"]["orderNumber"]),
@@ -277,6 +283,60 @@ mod ticket_t_58_kit {
             sources: raw["sources"].as_array().unwrap().clone(),
             kit_manifest: raw["kitManifest"].clone(),
             working_parts: parts.collect(),
+        }
+    }
+
+    fn only_kit_json(bytes: &[u8]) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(archive.len(), 1);
+        let mut payload = Vec::new();
+        archive
+            .by_name(KIT_JSON_NAME)
+            .unwrap()
+            .read_to_end(&mut payload)
+            .unwrap();
+        payload
+    }
+
+    #[test]
+    fn accepted_kit_bundles_match_node_without_falling_back_to_working_parts() {
+        let golden = golden();
+        let build = &golden["build"];
+        let recipe = recipe(&build["recipe"]);
+        let exported_at = build["exported_at"].as_str().unwrap();
+        let cases = golden["accepted_builds"].as_array().unwrap();
+        for case in cases {
+            let id = case["id"].as_str().unwrap();
+            let parts = if case["parts"].is_null() {
+                Vec::new()
+            } else {
+                case["parts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|raw| AcceptedKitBundlePart {
+                        part: bundle_part(raw, raw["partKey"].as_str().unwrap()),
+                        print_units: raw["units"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|unit| unit["completed"].as_bool().unwrap())
+                            .collect(),
+                    })
+                    .collect()
+            };
+            let data = build_accepted_kit_bundle(&recipe, &parts, exported_at);
+            let expected = case["kit_json"].as_str().unwrap().as_bytes();
+            let node_zip = hex::decode(case["zip_hex"].as_str().unwrap()).unwrap();
+            let rust_zip = kit_bundle_zip(&data).unwrap();
+            assert_eq!(kit_json_text(&data).as_bytes(), expected, "{id}");
+            assert_eq!(only_kit_json(&node_zip), expected, "{id}");
+            assert_eq!(only_kit_json(&rust_zip), expected, "{id}");
+            assert_eq!(
+                Value::Object(parse_kit_bundle(&rust_zip, None).unwrap()),
+                data,
+                "{id}"
+            );
         }
     }
 
